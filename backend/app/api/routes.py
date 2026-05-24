@@ -1,10 +1,12 @@
 import json
+import asyncio
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.schemas.payload import ExecuteRequest
 from app.services.orchestrator.graph import compile_dynamic_graph
 from app.core.database import get_db
 from app.models.workflow import WorkflowRun, NodeLog
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -78,3 +80,38 @@ async def get_run_logs(run_id: int, db: Session = Depends(get_db)):
             for log in logs
         ]
     }
+
+@router.post("/execute-stream")
+async def execute_workflow_stream(request: ExecuteRequest):
+    # 1. Compile the graph on the fly
+    dynamic_workflow = compile_dynamic_graph(request.nodes, request.edges)
+    
+    initial_state = {
+        "initial_prompt": request.initial_prompt,
+        "processed_data": "",
+        "status": "pending"
+    }
+
+    # 2. Create an async generator that yields data piece-by-piece
+    async def event_generator():
+        # Stream the LangGraph execution
+        for event in dynamic_workflow.stream(initial_state):
+            for node_name, state_update in event.items():
+                
+                # Format the data exactly how Server-Sent Events (SSE) expects it
+                payload = json.dumps({
+                    "node": node_name, 
+                    "data": state_update.get("processed_data", "")
+                })
+                
+                # Yield the chunk to the frontend immediately!
+                yield f"data: {payload}\n\n"
+                
+                # Tiny artificial delay just so the visual effect looks incredibly smooth
+                await asyncio.sleep(0.2) 
+                
+        # Tell the frontend we are finished
+        yield "data: [DONE]\n\n"
+
+    # 3. Return the streaming response
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

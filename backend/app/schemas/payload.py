@@ -4,6 +4,7 @@ from typing import List
 class NodeSchema(BaseModel):
     id: str
     label: str
+    system_prompt: str = "" # NEW: Expect system instructions
 
 class EdgeSchema(BaseModel):
     source: str

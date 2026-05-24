@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react"; // Added useMemo
+import { useState, useCallback, useMemo } from "react";
 import {
   ReactFlow,
   Controls,
@@ -15,32 +15,33 @@ import {
   Panel
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import CustomNode from "./CustomNode"; // 1. Import our new node
+import CustomNode from "./CustomNode";
 
+// Change the labels to something fun to test the multi-agent behavior!
 const initialNodes: Node[] = [
   {
-    id: "format_prompt",
+    id: "node_1",
     position: { x: 250, y: 100 },
-    data: { label: "Format Prompt Node" },
-    type: "custom", // 2. Change type from 'default' to 'custom'
+    data: { label: "Pirate Agent" },
+    type: "custom",
   },
   {
-    id: "execute_task",
+    id: "node_2",
     position: { x: 250, y: 250 },
-    data: { label: "Execute Task Node" },
-    type: "custom", // Change type here too
+    data: { label: "Gen Z Translator Agent" },
+    type: "custom",
   },
   {
-    id: "analyze_result",
+    id: "node_3",
     position: { x: 250, y: 400 },
-    data: { label: "Analyze Result Node" },
-    type: "custom", // And here
+    data: { label: "Academic Professor Agent" },
+    type: "custom",
   },
 ];
 
 const initialEdges: Edge[] = [
-  { id: "e1-2", source: "format_prompt", target: "execute_task", animated: true },
-  { id: "e2-3", source: "execute_task", target: "analyze_result", animated: true },
+  { id: "e1-2", source: "node_1", target: "node_2", animated: true },
+  { id: "e2-3", source: "node_2", target: "node_3", animated: true },
 ];
 
 export default function WorkflowCanvas() {
@@ -48,8 +49,9 @@ export default function WorkflowCanvas() {
   const [edges, setEdges] = useState<Edge[]>(initialEdges);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
+  
+  const [promptText, setPromptText] = useState("How do black holes work?");
 
-  // 3. Register the node types using useMemo for performance
   const nodeTypes = useMemo(() => ({ custom: CustomNode }), []);
 
   const onNodesChange = useCallback(
@@ -63,31 +65,67 @@ export default function WorkflowCanvas() {
   );
 
   const executeWorkflow = async () => {
+    if (!promptText.trim()) return; // Don't run if empty
+    
     setIsRunning(true);
-    setRunResult(null);
+    setRunResult(""); // Clear previous results so it starts fresh
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/execute", {
+      // Changed to the new stream endpoint!
+      const response = await fetch("http://127.0.0.1:8000/api/execute-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          workflow_id: "dynamic-ui-1",
-          initial_prompt: "Hello Dynamic Orra!",
-          nodes: nodes.map(n => ({ id: n.id, label: n.data.label as string })),
+          workflow_id: "stream-ui-1",
+          initial_prompt: promptText,
+          nodes: nodes.map(n => ({ 
+            id: n.id, 
+            label: n.data.label as string, 
+            system_prompt: (n.data.systemPrompt as string) || "Be a helpful assistant." 
+          })),
           edges: edges.map(e => ({ source: e.source, target: e.target }))
         }),
       });
 
-      const data = await response.json();
-      
-      if (data.final_state && data.final_state.status) {
-        setRunResult(data.final_state.status);
-      } else {
-        setRunResult("Workflow executed, but no final status returned.");
+      if (!response.body) throw new Error("No readable stream available");
+
+      // Set up the stream reader
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let done = false;
+
+      // Loop over the incoming data chunks
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.replace('data: ', '');
+              
+              if (dataStr === '[DONE]') {
+                done = true;
+                break;
+              }
+              
+              try {
+                // Parse the JSON chunk and update the UI in real-time!
+                const parsed = JSON.parse(dataStr);
+                setRunResult(parsed.data); 
+              } catch (e) {
+                console.error("Error parsing stream chunk", e);
+              }
+            }
+          }
+        }
       }
     } catch (error) {
       console.error("Execution failed:", error);
-      setRunResult("Error connecting to backend.");
+      setRunResult("Error connecting to backend stream.");
     } finally {
       setIsRunning(false);
     }
@@ -98,31 +136,41 @@ export default function WorkflowCanvas() {
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={nodeTypes} // 4. Pass the custom node types into React Flow
+        nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         fitView
       >
-        {/* ... (Keep your Background, Controls, and Panel exactly the same as before) ... */}
         <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
         <Controls />
         
-        <Panel position="top-right" className="bg-white p-4 rounded-lg shadow-md border border-gray-200 w-80">
+        <Panel position="top-right" className="bg-white p-4 rounded-lg shadow-md border border-gray-200 w-96">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">Workflow Controls</h3>
           
+          <div className="mb-3">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Initial Prompt</label>
+            <textarea
+              className="w-full text-sm p-2 border border-gray-300 rounded focus:ring-indigo-500 focus:border-indigo-500"
+              rows={3}
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              placeholder="Ask the agents something..."
+            />
+          </div>
+
           <button 
             onClick={executeWorkflow}
-            disabled={isRunning}
+            disabled={isRunning || !promptText.trim()}
             className={`w-full py-2 px-4 rounded-md text-white font-medium transition-colors ${
-              isRunning ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
+              isRunning || !promptText.trim() ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
-            {isRunning ? "Running..." : "Run Workflow"}
+            {isRunning ? "Streaming execution..." : "Run AI Workflow"}
           </button>
 
           {runResult && (
-            <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200 text-xs text-slate-600 break-words">
-              <strong>Result:</strong> <br/>
+            <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200 text-xs text-slate-800 whitespace-pre-wrap max-h-96 overflow-y-auto">
+              <strong>Execution Output:</strong> <br/><br/>
               {runResult}
             </div>
           )}
