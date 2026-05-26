@@ -19,15 +19,49 @@ import {
 import "@xyflow/react/dist/style.css";
 import CustomNode from "./CustomNode";
 
+type NodeStatus = "idle" | "queued" | "running" | "success" | "failed";
+
+type WorkflowNodeData = {
+  label: string;
+  systemPrompt?: string;
+  status?: NodeStatus;
+};
+
+type StreamEvent = {
+  type: "workflow_started" | "node_started" | "node_completed" | "node_failed" | "workflow_completed";
+  node?: string;
+  node_label?: string;
+  data?: string;
+  duration_ms?: number;
+  timestamp?: string;
+};
+
+type TimelineEvent = {
+  id: string;
+  message: string;
+  timestamp: string;
+  status: NodeStatus | "info";
+  durationMs?: number;
+};
+
 // Start with a completely blank canvas!
-const initialNodes: Node[] = [];
+const initialNodes: Node<WorkflowNodeData>[] = [];
 const initialEdges: Edge[] = [];
 
+function formatTimelineTime(timestamp?: string) {
+  return new Date(timestamp || Date.now()).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export default function WorkflowCanvas() {
-  const [nodes, setNodes] = useState<Node[]>(initialNodes);
+  const [nodes, setNodes] = useState<Node<WorkflowNodeData>[]>(initialNodes);
   const [edges, setEdges] = useState<Edge[]>(initialEdges);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   
   // Start with an empty prompt
   const [promptText, setPromptText] = useState("");
@@ -35,7 +69,7 @@ export default function WorkflowCanvas() {
   const nodeTypes = useMemo(() => ({ custom: CustomNode }), []);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<Node>[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
+    (changes: NodeChange<Node<WorkflowNodeData>>[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
     []
   );
   
@@ -52,14 +86,36 @@ export default function WorkflowCanvas() {
   // --- NEW: Add Node Function ---
   const addNode = () => {
     const newNodeId = `node_${Date.now()}`; // Unique ID based on timestamp
-    const newNode: Node = {
+    const newNode: Node<WorkflowNodeData> = {
       id: newNodeId,
       // Drop it randomly in the middle of the screen
       position: { x: 250 + Math.random() * 50, y: 100 + Math.random() * 50 }, 
-      data: { label: "New Agent", systemPrompt: "" },
+      data: { label: "New Agent", systemPrompt: "", status: "idle" },
       type: "custom",
     };
     setNodes((nds) => [...nds, newNode]);
+  };
+
+  const addTimelineEvent = (event: Omit<TimelineEvent, "id">) => {
+    setTimelineEvents((events) => [
+      ...events,
+      {
+        ...event,
+        id: `${Date.now()}-${Math.random()}`,
+      },
+    ]);
+  };
+
+  const updateNodeStatus = (nodeId: string, status: NodeStatus) => {
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          status: node.id === nodeId ? status : node.data.status,
+        },
+      }))
+    );
   };
 
   const executeWorkflow = async () => {
@@ -68,6 +124,8 @@ export default function WorkflowCanvas() {
     
     setIsRunning(true);
     setRunResult(""); // Clear previous results so it starts fresh
+    setTimelineEvents([]);
+    setNodes((nds) => nds.map((node) => ({ ...node, data: { ...node.data, status: "queued" } })));
 
     try {
       const response = await fetch("http://127.0.0.1:8000/api/execute-stream", {
@@ -91,6 +149,7 @@ export default function WorkflowCanvas() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let done = false;
+      let buffer = "";
 
       // Loop over the incoming data chunks
       while (!done) {
@@ -98,8 +157,9 @@ export default function WorkflowCanvas() {
         done = doneReading;
         
         if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n\n');
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || "";
           
           for (const line of lines) {
             if (line.startsWith('data: ')) {
@@ -112,15 +172,54 @@ export default function WorkflowCanvas() {
               
               try {
                 // Parse the JSON chunk and update the UI in real-time!
-                const parsed = JSON.parse(dataStr);
-                setRunResult(parsed.data); 
+                const parsed = JSON.parse(dataStr) as StreamEvent;
+                const nodeLabel = parsed.node_label || parsed.node || "Workflow";
+                const timestamp = parsed.timestamp || new Date().toISOString();
 
-                setNodes((nds) =>
-                  nds.map((n) => ({
-                    ...n,
-                    data: { ...n.data, isActive: n.id === parsed.node }
-                  }))
-                );
+                if (parsed.type === "workflow_started") {
+                  addTimelineEvent({
+                    message: "Workflow started",
+                    timestamp,
+                    status: "info",
+                  });
+                }
+
+                if (parsed.type === "node_started" && parsed.node) {
+                  updateNodeStatus(parsed.node, "running");
+                  addTimelineEvent({
+                    message: `${nodeLabel} started`,
+                    timestamp,
+                    status: "running",
+                  });
+                }
+
+                if (parsed.type === "node_completed" && parsed.node) {
+                  setRunResult(parsed.data || "");
+                  updateNodeStatus(parsed.node, "success");
+                  addTimelineEvent({
+                    message: `${nodeLabel} completed`,
+                    timestamp,
+                    status: "success",
+                    durationMs: parsed.duration_ms,
+                  });
+                }
+
+                if (parsed.type === "node_failed" && parsed.node) {
+                  updateNodeStatus(parsed.node, "failed");
+                  addTimelineEvent({
+                    message: `${nodeLabel} failed`,
+                    timestamp,
+                    status: "failed",
+                  });
+                }
+
+                if (parsed.type === "workflow_completed") {
+                  addTimelineEvent({
+                    message: "Workflow completed",
+                    timestamp,
+                    status: "success",
+                  });
+                }
               } catch (e) {
                 console.error("Error parsing stream chunk", e);
               }
@@ -128,11 +227,23 @@ export default function WorkflowCanvas() {
           }
         }
       }
-
-      setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, isActive: false } })));
     } catch (error) {
       console.error("Execution failed:", error);
       setRunResult("Error connecting to backend stream.");
+      setNodes((nds) =>
+        nds.map((node) => ({
+          ...node,
+          data: {
+            ...node.data,
+            status: node.data.status === "queued" || node.data.status === "running" ? "failed" : node.data.status,
+          },
+        }))
+      );
+      addTimelineEvent({
+        message: "Workflow failed",
+        timestamp: new Date().toISOString(),
+        status: "failed",
+      });
     } finally {
       setIsRunning(false);
     }
@@ -188,6 +299,36 @@ export default function WorkflowCanvas() {
             <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200 text-xs text-slate-800 whitespace-pre-wrap max-h-96 overflow-y-auto">
               <strong>Execution Output:</strong> <br/><br/>
               {runResult}
+            </div>
+          )}
+
+          {timelineEvents.length > 0 && (
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-slate-500">Execution Timeline</h4>
+              <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                {timelineEvents.map((event) => (
+                  <div key={event.id} className="flex items-start gap-2 text-xs text-slate-700">
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                      event.status === "running"
+                        ? "bg-green-500"
+                        : event.status === "success"
+                          ? "bg-emerald-500"
+                          : event.status === "failed"
+                            ? "bg-red-500"
+                            : "bg-slate-400"
+                    }`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-medium">{event.message}</span>
+                        <span className="shrink-0 text-[10px] text-slate-400">{formatTimelineTime(event.timestamp)}</span>
+                      </div>
+                      {typeof event.durationMs === "number" && (
+                        <div className="text-[10px] text-slate-400">{event.durationMs} ms</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </Panel>

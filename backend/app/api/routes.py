@@ -1,5 +1,6 @@
 import json
 import asyncio
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.schemas.payload import ExecuteRequest
@@ -94,22 +95,44 @@ async def execute_workflow_stream(request: ExecuteRequest):
 
     # 2. Create an async generator that yields data piece-by-piece
     async def event_generator():
+        def sse_payload(payload: dict):
+            payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+            return f"data: {json.dumps(payload)}\n\n"
+
+        yield sse_payload({
+            "type": "workflow_started",
+            "nodes": [node.id for node in request.nodes],
+        })
+
         # Stream the LangGraph execution
         for event in dynamic_workflow.stream(initial_state):
             for node_name, state_update in event.items():
-                
-                # Format the data exactly how Server-Sent Events (SSE) expects it
-                payload = json.dumps({
-                    "node": node_name, 
-                    "data": state_update.get("processed_data", "")
+
+                node_label = next((node.label for node in request.nodes if node.id == node_name), node_name)
+
+                yield sse_payload({
+                    "type": "node_started",
+                    "node": node_name,
+                    "node_label": node_label,
                 })
-                
-                # Yield the chunk to the frontend immediately!
-                yield f"data: {payload}\n\n"
-                
+
+                await asyncio.sleep(0.05)
+
+                yield sse_payload({
+                    "type": "node_completed",
+                    "node": node_name,
+                    "node_label": node_label,
+                    "data": state_update.get("processed_data", ""),
+                    "duration_ms": state_update.get("duration_ms"),
+                })
+
                 # Tiny artificial delay just so the visual effect looks incredibly smooth
                 await asyncio.sleep(0.2) 
-                
+
+        yield sse_payload({
+            "type": "workflow_completed",
+        })
+
         # Tell the frontend we are finished
         yield "data: [DONE]\n\n"
 

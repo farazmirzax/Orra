@@ -1,4 +1,5 @@
 import os
+import time
 from typing import TypedDict
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
@@ -21,6 +22,7 @@ llm = ChatGroq(
 # NEW: Pass the system_prompt into the factory
 def create_llm_node(node_label: str, system_prompt: str):
     def llm_node(state: GraphState):
+        started_at = time.perf_counter()
         current_data = state.get("processed_data", "")
         prompt = state.get("initial_prompt", "")
         input_text = current_data if current_data else prompt
@@ -40,11 +42,13 @@ def create_llm_node(node_label: str, system_prompt: str):
         
         print(f"Running LLM for node: {node_label}...")
         response = chain.invoke({"text": input_text})
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
         
         new_data = f"{current_data}\n\n[{node_label}]: {response.content}" if current_data else f"[{node_label}]: {response.content}"
         
         return {
             "processed_data": new_data,
-            "status": f"Successfully processed by {node_label}"
+            "status": f"Successfully processed by {node_label}",
+            "duration_ms": duration_ms,
         }
     return llm_node
