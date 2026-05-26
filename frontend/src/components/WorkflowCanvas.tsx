@@ -766,7 +766,7 @@ export default function WorkflowCanvas() {
           </Panel>
         )}
         
-        <Panel position="top-right" className="bg-white p-4 rounded-lg shadow-md border border-gray-200 w-96">
+        <Panel position="top-right" className="max-h-[calc(100vh-7rem)] w-96 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4 shadow-md">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">Workflow Controls</h3>
           {currentRunId && (
             <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -820,6 +820,45 @@ export default function WorkflowCanvas() {
             {isRunning ? "Streaming execution..." : isReplaying ? "Replaying run..." : "Run AI Workflow"}
           </button>
 
+          {runResult && (
+            <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
+              <div className="mb-2 font-semibold">Execution Output:</div>
+              <div className="max-h-56 overflow-y-auto whitespace-pre-wrap pr-1">
+                {runResult}
+              </div>
+            </div>
+          )}
+
+          {timelineEvents.length > 0 && (
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-slate-500">Execution Timeline</h4>
+              <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
+                {timelineEvents.map((event) => (
+                  <div key={event.id} className="flex items-start gap-2 text-xs text-slate-700">
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                      event.status === "running"
+                        ? "bg-green-500"
+                        : event.status === "success"
+                          ? "bg-emerald-500"
+                          : event.status === "failed"
+                            ? "bg-red-500"
+                            : "bg-slate-400"
+                    }`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-medium">{event.message}</span>
+                        <span className="shrink-0 text-[10px] text-slate-400">{formatTimelineTime(event.timestamp)}</span>
+                      </div>
+                      {typeof event.durationMs === "number" && (
+                        <div className="text-[10px] text-slate-400">{event.durationMs} ms</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {(runsError || recentRuns.length > 0) && (
             <div className="mt-4 border-t border-slate-200 pt-3">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -852,43 +891,6 @@ export default function WorkflowCanvas() {
                     >
                       Replay
                     </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {runResult && (
-            <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200 text-xs text-slate-800 whitespace-pre-wrap max-h-96 overflow-y-auto">
-              <strong>Execution Output:</strong> <br/><br/>
-              {runResult}
-            </div>
-          )}
-
-          {timelineEvents.length > 0 && (
-            <div className="mt-4 border-t border-slate-200 pt-3">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-slate-500">Execution Timeline</h4>
-              <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
-                {timelineEvents.map((event) => (
-                  <div key={event.id} className="flex items-start gap-2 text-xs text-slate-700">
-                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
-                      event.status === "running"
-                        ? "bg-green-500"
-                        : event.status === "success"
-                          ? "bg-emerald-500"
-                          : event.status === "failed"
-                            ? "bg-red-500"
-                            : "bg-slate-400"
-                    }`} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-medium">{event.message}</span>
-                        <span className="shrink-0 text-[10px] text-slate-400">{formatTimelineTime(event.timestamp)}</span>
-                      </div>
-                      {typeof event.durationMs === "number" && (
-                        <div className="text-[10px] text-slate-400">{event.durationMs} ms</div>
-                      )}
-                    </div>
                   </div>
                 ))}
               </div>
