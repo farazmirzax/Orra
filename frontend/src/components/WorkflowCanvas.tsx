@@ -5,8 +5,10 @@ import {
   ReactFlow,
   Controls,
   Background,
+  addEdge,
   applyNodeChanges,
   applyEdgeChanges,
+  Connection,
   NodeChange,
   EdgeChange,
   Node,
@@ -17,32 +19,9 @@ import {
 import "@xyflow/react/dist/style.css";
 import CustomNode from "./CustomNode";
 
-// Change the labels to something fun to test the multi-agent behavior!
-const initialNodes: Node[] = [
-  {
-    id: "node_1",
-    position: { x: 250, y: 100 },
-    data: { label: "Pirate Agent" },
-    type: "custom",
-  },
-  {
-    id: "node_2",
-    position: { x: 250, y: 250 },
-    data: { label: "Gen Z Translator Agent" },
-    type: "custom",
-  },
-  {
-    id: "node_3",
-    position: { x: 250, y: 400 },
-    data: { label: "Academic Professor Agent" },
-    type: "custom",
-  },
-];
-
-const initialEdges: Edge[] = [
-  { id: "e1-2", source: "node_1", target: "node_2", animated: true },
-  { id: "e2-3", source: "node_2", target: "node_3", animated: true },
-];
+// Start with a completely blank canvas!
+const initialNodes: Node[] = [];
+const initialEdges: Edge[] = [];
 
 export default function WorkflowCanvas() {
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
@@ -50,7 +29,8 @@ export default function WorkflowCanvas() {
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
   
-  const [promptText, setPromptText] = useState("How do black holes work?");
+  // Start with an empty prompt
+  const [promptText, setPromptText] = useState("");
 
   const nodeTypes = useMemo(() => ({ custom: CustomNode }), []);
 
@@ -64,14 +44,32 @@ export default function WorkflowCanvas() {
     []
   );
 
+  const onConnect = useCallback(
+    (connection: Connection) => setEdges((eds) => addEdge({ ...connection, animated: true }, eds)),
+    []
+  );
+
+  // --- NEW: Add Node Function ---
+  const addNode = () => {
+    const newNodeId = `node_${Date.now()}`; // Unique ID based on timestamp
+    const newNode: Node = {
+      id: newNodeId,
+      // Drop it randomly in the middle of the screen
+      position: { x: 250 + Math.random() * 50, y: 100 + Math.random() * 50 }, 
+      data: { label: "New Agent", systemPrompt: "" },
+      type: "custom",
+    };
+    setNodes((nds) => [...nds, newNode]);
+  };
+
   const executeWorkflow = async () => {
     if (!promptText.trim()) return; // Don't run if empty
+    if (nodes.length === 0) return; // Don't run if no agents exist
     
     setIsRunning(true);
     setRunResult(""); // Clear previous results so it starts fresh
 
     try {
-      // Changed to the new stream endpoint!
       const response = await fetch("http://127.0.0.1:8000/api/execute-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -116,6 +114,13 @@ export default function WorkflowCanvas() {
                 // Parse the JSON chunk and update the UI in real-time!
                 const parsed = JSON.parse(dataStr);
                 setRunResult(parsed.data); 
+
+                setNodes((nds) =>
+                  nds.map((n) => ({
+                    ...n,
+                    data: { ...n.data, isActive: n.id === parsed.node }
+                  }))
+                );
               } catch (e) {
                 console.error("Error parsing stream chunk", e);
               }
@@ -123,6 +128,8 @@ export default function WorkflowCanvas() {
           }
         }
       }
+
+      setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, isActive: false } })));
     } catch (error) {
       console.error("Execution failed:", error);
       setRunResult("Error connecting to backend stream.");
@@ -139,6 +146,7 @@ export default function WorkflowCanvas() {
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
         fitView
       >
         <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
@@ -158,11 +166,19 @@ export default function WorkflowCanvas() {
             />
           </div>
 
+          {/* --- NEW: Add Agent Button --- */}
+          <button 
+            onClick={addNode}
+            className="w-full mb-2 py-2 px-4 rounded-md text-indigo-600 bg-indigo-50 border border-indigo-200 font-medium hover:bg-indigo-100 transition-colors"
+          >
+            + Add New Agent
+          </button>
+
           <button 
             onClick={executeWorkflow}
-            disabled={isRunning || !promptText.trim()}
+            disabled={isRunning || !promptText.trim() || nodes.length === 0}
             className={`w-full py-2 px-4 rounded-md text-white font-medium transition-colors ${
-              isRunning || !promptText.trim() ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
+              isRunning || !promptText.trim() || nodes.length === 0 ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
             {isRunning ? "Streaming execution..." : "Run AI Workflow"}
