@@ -124,6 +124,8 @@ async def execute_workflow_stream(request: ExecuteRequest):
                     "node_label": node_label,
                     "data": state_update.get("processed_data", ""),
                     "duration_ms": state_update.get("duration_ms"),
+                    "input_text": state_update.get("input_text", ""),
+                    "output_text": state_update.get("output_text", ""),
                 })
 
                 # Tiny artificial delay just so the visual effect looks incredibly smooth

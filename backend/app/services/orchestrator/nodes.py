@@ -1,6 +1,6 @@
 import os
 import time
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
@@ -11,6 +11,9 @@ class GraphState(TypedDict):
     initial_prompt: str
     processed_data: str
     status: str
+    duration_ms: NotRequired[int]
+    input_text: NotRequired[str]
+    output_text: NotRequired[str]
 
 # FIX: Swapped to the active 3.1 model!
 llm = ChatGroq(
@@ -50,5 +53,7 @@ def create_llm_node(node_label: str, system_prompt: str):
             "processed_data": new_data,
             "status": f"Successfully processed by {node_label}",
             "duration_ms": duration_ms,
+            "input_text": input_text,
+            "output_text": response.content,
         }
     return llm_node

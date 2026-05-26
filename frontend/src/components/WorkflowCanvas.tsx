@@ -33,6 +33,9 @@ type StreamEvent = {
   node_label?: string;
   data?: string;
   duration_ms?: number;
+  input_text?: string;
+  output_text?: string;
+  error?: string;
   timestamp?: string;
 };
 
@@ -42,6 +45,16 @@ type TimelineEvent = {
   timestamp: string;
   status: NodeStatus | "info";
   durationMs?: number;
+};
+
+type NodeExecutionDetails = {
+  status: NodeStatus;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  inputText?: string;
+  outputText?: string;
+  error?: string;
 };
 
 // Start with a completely blank canvas!
@@ -62,11 +75,18 @@ export default function WorkflowCanvas() {
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [nodeDetails, setNodeDetails] = useState<Record<string, NodeExecutionDetails>>({});
   
   // Start with an empty prompt
   const [promptText, setPromptText] = useState("");
 
   const nodeTypes = useMemo(() => ({ custom: CustomNode }), []);
+  const selectedNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId),
+    [nodes, selectedNodeId]
+  );
+  const selectedNodeDetails = selectedNode ? nodeDetails[selectedNode.id] : undefined;
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Node<WorkflowNodeData>>[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
@@ -118,6 +138,17 @@ export default function WorkflowCanvas() {
     );
   };
 
+  const updateNodeDetails = (nodeId: string, details: Partial<NodeExecutionDetails>) => {
+    setNodeDetails((currentDetails) => ({
+      ...currentDetails,
+      [nodeId]: {
+        status: "idle",
+        ...currentDetails[nodeId],
+        ...details,
+      },
+    }));
+  };
+
   const executeWorkflow = async () => {
     if (!promptText.trim()) return; // Don't run if empty
     if (nodes.length === 0) return; // Don't run if no agents exist
@@ -126,6 +157,16 @@ export default function WorkflowCanvas() {
     setRunResult(""); // Clear previous results so it starts fresh
     setTimelineEvents([]);
     setNodes((nds) => nds.map((node) => ({ ...node, data: { ...node.data, status: "queued" } })));
+    setNodeDetails(
+      Object.fromEntries(
+        nodes.map((node) => [
+          node.id,
+          {
+            status: "queued" as NodeStatus,
+          },
+        ])
+      )
+    );
 
     try {
       const response = await fetch("http://127.0.0.1:8000/api/execute-stream", {
@@ -186,6 +227,11 @@ export default function WorkflowCanvas() {
 
                 if (parsed.type === "node_started" && parsed.node) {
                   updateNodeStatus(parsed.node, "running");
+                  updateNodeDetails(parsed.node, {
+                    status: "running",
+                    startedAt: timestamp,
+                    error: undefined,
+                  });
                   addTimelineEvent({
                     message: `${nodeLabel} started`,
                     timestamp,
@@ -196,6 +242,13 @@ export default function WorkflowCanvas() {
                 if (parsed.type === "node_completed" && parsed.node) {
                   setRunResult(parsed.data || "");
                   updateNodeStatus(parsed.node, "success");
+                  updateNodeDetails(parsed.node, {
+                    status: "success",
+                    completedAt: timestamp,
+                    durationMs: parsed.duration_ms,
+                    inputText: parsed.input_text,
+                    outputText: parsed.output_text,
+                  });
                   addTimelineEvent({
                     message: `${nodeLabel} completed`,
                     timestamp,
@@ -206,6 +259,11 @@ export default function WorkflowCanvas() {
 
                 if (parsed.type === "node_failed" && parsed.node) {
                   updateNodeStatus(parsed.node, "failed");
+                  updateNodeDetails(parsed.node, {
+                    status: "failed",
+                    completedAt: timestamp,
+                    error: parsed.error || "Node execution failed.",
+                  });
                   addTimelineEvent({
                     message: `${nodeLabel} failed`,
                     timestamp,
@@ -239,6 +297,16 @@ export default function WorkflowCanvas() {
           },
         }))
       );
+      setNodeDetails((currentDetails) =>
+        Object.fromEntries(
+          Object.entries(currentDetails).map(([nodeId, details]) => [
+            nodeId,
+            details.status === "queued" || details.status === "running"
+              ? { ...details, status: "failed", completedAt: new Date().toISOString(), error: "Workflow failed before completion." }
+              : details,
+          ])
+        )
+      );
       addTimelineEvent({
         message: "Workflow failed",
         timestamp: new Date().toISOString(),
@@ -258,10 +326,79 @@ export default function WorkflowCanvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+        onPaneClick={() => setSelectedNodeId(null)}
         fitView
       >
         <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
         <Controls />
+
+        {selectedNode && (
+          <Panel position="bottom-left" className="w-96 rounded-lg border border-slate-200 bg-white p-4 shadow-md">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-semibold text-slate-800">{selectedNode.data.label}</h3>
+                <p className="text-xs text-slate-500">Node Details</p>
+              </div>
+              <span className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                selectedNode.data.status === "running"
+                  ? "bg-green-50 text-green-700"
+                  : selectedNode.data.status === "success"
+                    ? "bg-emerald-50 text-emerald-700"
+                    : selectedNode.data.status === "failed"
+                      ? "bg-red-50 text-red-700"
+                      : selectedNode.data.status === "queued"
+                        ? "bg-amber-50 text-amber-700"
+                        : "bg-slate-100 text-slate-500"
+              }`}>
+                {selectedNode.data.status || "idle"}
+              </span>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <div className="mb-1 font-semibold text-slate-500">System Prompt</div>
+                <div className="max-h-20 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">
+                  {selectedNode.data.systemPrompt || "Be a helpful assistant."}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="font-semibold text-slate-500">Started</div>
+                  <div className="text-slate-700">{selectedNodeDetails?.startedAt ? formatTimelineTime(selectedNodeDetails.startedAt) : "Not started"}</div>
+                </div>
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="font-semibold text-slate-500">Duration</div>
+                  <div className="text-slate-700">{typeof selectedNodeDetails?.durationMs === "number" ? `${selectedNodeDetails.durationMs} ms` : "Pending"}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 font-semibold text-slate-500">Input Received</div>
+                <div className="max-h-24 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700 whitespace-pre-wrap">
+                  {selectedNodeDetails?.inputText || "No input captured yet."}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 font-semibold text-slate-500">Response Generated</div>
+                <div className="max-h-28 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700 whitespace-pre-wrap">
+                  {selectedNodeDetails?.outputText || "No response captured yet."}
+                </div>
+              </div>
+
+              {selectedNodeDetails?.error && (
+                <div>
+                  <div className="mb-1 font-semibold text-red-600">Error</div>
+                  <div className="rounded border border-red-200 bg-red-50 p-2 text-red-700">
+                    {selectedNodeDetails.error}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Panel>
+        )}
         
         <Panel position="top-right" className="bg-white p-4 rounded-lg shadow-md border border-gray-200 w-96">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">Workflow Controls</h3>
