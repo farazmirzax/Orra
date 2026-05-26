@@ -5,6 +5,8 @@ class NodeSchema(BaseModel):
     id: str
     label: str
     system_prompt: str = "" # NEW: Expect system instructions
+    x: float | None = None
+    y: float | None = None
 
 class EdgeSchema(BaseModel):
     source: str

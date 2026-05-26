@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   ReactFlow,
   Controls,
@@ -29,6 +29,8 @@ type WorkflowNodeData = {
 
 type StreamEvent = {
   type: "workflow_started" | "node_started" | "node_completed" | "node_failed" | "workflow_completed";
+  run_id?: number;
+  workflow?: WorkflowSnapshot;
   node?: string;
   node_label?: string;
   data?: string;
@@ -36,6 +38,7 @@ type StreamEvent = {
   input_text?: string;
   output_text?: string;
   error?: string;
+  retry_count?: number;
   timestamp?: string;
 };
 
@@ -55,11 +58,114 @@ type NodeExecutionDetails = {
   inputText?: string;
   outputText?: string;
   error?: string;
+  retryCount?: number;
+};
+
+type RunSummary = {
+  run_id: number;
+  workflow_id: string;
+  initial_prompt: string;
+  final_status: string;
+  created_at: string;
+};
+
+type WorkflowSnapshot = {
+  nodes: {
+    id: string;
+    label: string;
+    system_prompt?: string;
+    x?: number | null;
+    y?: number | null;
+  }[];
+  edges: {
+    source: string;
+    target: string;
+  }[];
+};
+
+type RunStep = {
+  step_id: number;
+  node: string;
+  state_snapshot: StreamEvent & {
+    state?: {
+      processed_data?: string;
+      duration_ms?: number;
+      input_text?: string;
+      output_text?: string;
+      error?: string;
+      retry_count?: number;
+    };
+  };
+  timestamp: string;
+};
+
+type RunDetails = {
+  run_id: number;
+  workflow_id: string;
+  final_status: string;
+  execution_steps: RunStep[];
 };
 
 // Start with a completely blank canvas!
 const initialNodes: Node<WorkflowNodeData>[] = [];
 const initialEdges: Edge[] = [];
+
+const workflowTemplates = [
+  {
+    name: "Research",
+    prompt: "Research current trends in bioinformatics and summarize the most important themes.",
+    nodes: [
+      {
+        label: "Researcher",
+        systemPrompt: "Find the most relevant information and identify the key facts, patterns, and open questions.",
+      },
+      {
+        label: "Fact Checker",
+        systemPrompt: "Check the research for accuracy, uncertainty, and claims that need stronger evidence.",
+      },
+      {
+        label: "Summarizer",
+        systemPrompt: "Turn the reviewed research into a concise executive summary with clear takeaways.",
+      },
+    ],
+  },
+  {
+    name: "Coding",
+    prompt: "Plan and review an implementation for a small feature.",
+    nodes: [
+      {
+        label: "Planner",
+        systemPrompt: "Break the feature request into a practical implementation plan.",
+      },
+      {
+        label: "Code Generator",
+        systemPrompt: "Describe the code changes needed to implement the plan cleanly.",
+      },
+      {
+        label: "Reviewer",
+        systemPrompt: "Review the proposed implementation for bugs, edge cases, and missing tests.",
+      },
+    ],
+  },
+  {
+    name: "Content",
+    prompt: "Create a short product announcement for a developer tool.",
+    nodes: [
+      {
+        label: "Writer",
+        systemPrompt: "Draft clear, concise copy for a technical audience.",
+      },
+      {
+        label: "SEO Optimizer",
+        systemPrompt: "Improve discoverability while keeping the writing natural and specific.",
+      },
+      {
+        label: "Editor",
+        systemPrompt: "Polish the final copy for clarity, tone, and flow.",
+      },
+    ],
+  },
+];
 
 function formatTimelineTime(timestamp?: string) {
   return new Date(timestamp || Date.now()).toLocaleTimeString([], {
@@ -77,6 +183,10 @@ export default function WorkflowCanvas() {
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeDetails, setNodeDetails] = useState<Record<string, NodeExecutionDetails>>({});
+  const [currentRunId, setCurrentRunId] = useState<number | null>(null);
+  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [isReplaying, setIsReplaying] = useState(false);
   
   // Start with an empty prompt
   const [promptText, setPromptText] = useState("");
@@ -103,6 +213,50 @@ export default function WorkflowCanvas() {
     []
   );
 
+  const loadRecentRuns = useCallback(async () => {
+    try {
+      setRunsError(null);
+      const response = await fetch("http://127.0.0.1:8000/api/runs");
+      if (!response.ok) {
+        throw new Error("Run history request failed.");
+      }
+      const data = await response.json();
+      setRecentRuns(data.runs || []);
+    } catch (error) {
+      console.error("Failed to load recent runs:", error);
+      setRunsError("Run history unavailable. Check that the backend is running.");
+    }
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadInitialRuns = async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:8000/api/runs");
+        if (!response.ok) {
+          throw new Error("Run history request failed.");
+        }
+        const data = await response.json();
+        if (isMounted) {
+          setRunsError(null);
+          setRecentRuns(data.runs || []);
+        }
+      } catch (error) {
+        console.error("Failed to load recent runs:", error);
+        if (isMounted) {
+          setRunsError("Run history unavailable. Check that the backend is running.");
+        }
+      }
+    };
+
+    void loadInitialRuns();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // --- NEW: Add Node Function ---
   const addNode = () => {
     const newNodeId = `node_${Date.now()}`; // Unique ID based on timestamp
@@ -114,6 +268,35 @@ export default function WorkflowCanvas() {
       type: "custom",
     };
     setNodes((nds) => [...nds, newNode]);
+  };
+
+  const loadTemplate = (template: typeof workflowTemplates[number]) => {
+    const templateNodes: Node<WorkflowNodeData>[] = template.nodes.map((node, index) => ({
+      id: `template_${Date.now()}_${index}`,
+      type: "custom",
+      position: { x: 260, y: 90 + index * 190 },
+      data: {
+        label: node.label,
+        systemPrompt: node.systemPrompt,
+        status: "idle",
+      },
+    }));
+
+    const templateEdges: Edge[] = templateNodes.slice(0, -1).map((node, index) => ({
+      id: `template_edge_${Date.now()}_${index}`,
+      source: node.id,
+      target: templateNodes[index + 1].id,
+      animated: true,
+    }));
+
+    setNodes(templateNodes);
+    setEdges(templateEdges);
+    setPromptText(template.prompt);
+    setRunResult(null);
+    setTimelineEvents([]);
+    setNodeDetails({});
+    setSelectedNodeId(null);
+    setCurrentRunId(null);
   };
 
   const addTimelineEvent = (event: Omit<TimelineEvent, "id">) => {
@@ -156,6 +339,7 @@ export default function WorkflowCanvas() {
     setIsRunning(true);
     setRunResult(""); // Clear previous results so it starts fresh
     setTimelineEvents([]);
+    setCurrentRunId(null);
     setNodes((nds) => nds.map((node) => ({ ...node, data: { ...node.data, status: "queued" } })));
     setNodeDetails(
       Object.fromEntries(
@@ -178,7 +362,9 @@ export default function WorkflowCanvas() {
           nodes: nodes.map(n => ({ 
             id: n.id, 
             label: n.data.label as string, 
-            system_prompt: (n.data.systemPrompt as string) || "Be a helpful assistant." 
+            system_prompt: (n.data.systemPrompt as string) || "Be a helpful assistant.",
+            x: n.position.x,
+            y: n.position.y,
           })),
           edges: edges.map(e => ({ source: e.source, target: e.target }))
         }),
@@ -218,8 +404,11 @@ export default function WorkflowCanvas() {
                 const timestamp = parsed.timestamp || new Date().toISOString();
 
                 if (parsed.type === "workflow_started") {
+                  if (parsed.run_id) {
+                    setCurrentRunId(parsed.run_id);
+                  }
                   addTimelineEvent({
-                    message: "Workflow started",
+                    message: parsed.run_id ? `Workflow started - Run #${parsed.run_id}` : "Workflow started",
                     timestamp,
                     status: "info",
                   });
@@ -248,6 +437,7 @@ export default function WorkflowCanvas() {
                     durationMs: parsed.duration_ms,
                     inputText: parsed.input_text,
                     outputText: parsed.output_text,
+                    retryCount: parsed.retry_count,
                   });
                   addTimelineEvent({
                     message: `${nodeLabel} completed`,
@@ -258,16 +448,22 @@ export default function WorkflowCanvas() {
                 }
 
                 if (parsed.type === "node_failed" && parsed.node) {
+                  setRunResult(parsed.data || parsed.output_text || parsed.error || "Node execution failed.");
                   updateNodeStatus(parsed.node, "failed");
                   updateNodeDetails(parsed.node, {
                     status: "failed",
                     completedAt: timestamp,
+                    durationMs: parsed.duration_ms,
+                    inputText: parsed.input_text,
+                    outputText: parsed.output_text,
                     error: parsed.error || "Node execution failed.",
+                    retryCount: parsed.retry_count,
                   });
                   addTimelineEvent({
                     message: `${nodeLabel} failed`,
                     timestamp,
                     status: "failed",
+                    durationMs: parsed.duration_ms,
                   });
                 }
 
@@ -277,6 +473,7 @@ export default function WorkflowCanvas() {
                     timestamp,
                     status: "success",
                   });
+                  loadRecentRuns();
                 }
               } catch (e) {
                 console.error("Error parsing stream chunk", e);
@@ -314,6 +511,168 @@ export default function WorkflowCanvas() {
       });
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const replayRun = async (runId: number) => {
+    setIsReplaying(true);
+    setCurrentRunId(runId);
+    setTimelineEvents([]);
+    setRunResult("");
+    setSelectedNodeId(null);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/runs/${runId}`);
+      const runDetails = await response.json() as RunDetails;
+      const steps = runDetails.execution_steps || [];
+      const workflowStarted = steps.find((step) => step.state_snapshot.type === "workflow_started");
+      const workflow = workflowStarted?.state_snapshot.workflow;
+
+      if (workflow) {
+        setNodes(
+          workflow.nodes.map((node, index) => ({
+            id: node.id,
+            type: "custom",
+            position: {
+              x: typeof node.x === "number" ? node.x : 220 + index * 60,
+              y: typeof node.y === "number" ? node.y : 120 + index * 160,
+            },
+            data: {
+              label: node.label,
+              systemPrompt: node.system_prompt || "",
+              status: "idle",
+            },
+          }))
+        );
+        setEdges(
+          workflow.edges.map((edge, index) => ({
+            id: `replay-${runId}-${index}`,
+            source: edge.source,
+            target: edge.target,
+            animated: true,
+          }))
+        );
+      } else {
+        const replayNodeIds = Array.from(
+          new Set(
+            steps
+              .map((step) => step.state_snapshot.node)
+              .filter((nodeId): nodeId is string => Boolean(nodeId))
+          )
+        );
+
+        setNodes(
+          replayNodeIds.map((nodeId, index) => {
+            const nodeEvent = steps.find((step) => step.state_snapshot.node === nodeId);
+            return {
+              id: nodeId,
+              type: "custom",
+              position: { x: 260, y: 120 + index * 180 },
+              data: {
+                label: nodeEvent?.state_snapshot.node_label || nodeId,
+                systemPrompt: "",
+                status: "idle",
+              },
+            };
+          })
+        );
+
+        setEdges(
+          replayNodeIds.slice(0, -1).map((nodeId, index) => ({
+            id: `replay-${runId}-fallback-${index}`,
+            source: nodeId,
+            target: replayNodeIds[index + 1],
+            animated: true,
+          }))
+        );
+      }
+
+      setNodeDetails({});
+
+      for (const step of steps) {
+        const event = step.state_snapshot;
+        const timestamp = event.timestamp || step.timestamp || new Date().toISOString();
+        const nodeLabel = event.node_label || event.node || "Workflow";
+
+        if (event.type === "workflow_started") {
+          addTimelineEvent({
+            message: `Replay started - Run #${runId}`,
+            timestamp,
+            status: "info",
+          });
+        }
+
+        if (event.type === "node_started" && event.node) {
+          updateNodeStatus(event.node, "running");
+          updateNodeDetails(event.node, {
+            status: "running",
+            startedAt: timestamp,
+          });
+          addTimelineEvent({
+            message: `${nodeLabel} started`,
+            timestamp,
+            status: "running",
+          });
+        }
+
+        if (event.type === "node_completed" && event.node) {
+          updateNodeStatus(event.node, "success");
+          updateNodeDetails(event.node, {
+            status: "success",
+            completedAt: timestamp,
+            durationMs: event.duration_ms,
+            inputText: event.input_text || event.state?.input_text,
+            outputText: event.output_text || event.state?.output_text,
+            retryCount: event.retry_count || event.state?.retry_count,
+          });
+          setRunResult(event.data || event.state?.processed_data || "");
+          addTimelineEvent({
+            message: `${nodeLabel} completed`,
+            timestamp,
+            status: "success",
+            durationMs: event.duration_ms || event.state?.duration_ms,
+          });
+        }
+
+        if (event.type === "node_failed" && event.node) {
+          updateNodeStatus(event.node, "failed");
+          updateNodeDetails(event.node, {
+            status: "failed",
+            completedAt: timestamp,
+            durationMs: event.duration_ms,
+            inputText: event.input_text || event.state?.input_text,
+            outputText: event.output_text || event.state?.output_text,
+            error: event.error || event.state?.error || "Node execution failed.",
+            retryCount: event.retry_count || event.state?.retry_count,
+          });
+          setRunResult(event.data || event.output_text || event.state?.processed_data || event.error || "Node execution failed.");
+          addTimelineEvent({
+            message: `${nodeLabel} failed`,
+            timestamp,
+            status: "failed",
+            durationMs: event.duration_ms || event.state?.duration_ms,
+          });
+        }
+
+        if (event.type === "workflow_completed") {
+          addTimelineEvent({
+            message: "Replay completed",
+            timestamp,
+            status: "success",
+          });
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    } catch (error) {
+      console.error("Replay failed:", error);
+      addTimelineEvent({
+        message: "Replay failed",
+        timestamp: new Date().toISOString(),
+        status: "failed",
+      });
+    } finally {
+      setIsReplaying(false);
     }
   };
 
@@ -374,6 +733,13 @@ export default function WorkflowCanvas() {
                 </div>
               </div>
 
+              {typeof selectedNodeDetails?.retryCount === "number" && (
+                <div className="rounded border border-slate-200 p-2">
+                  <div className="font-semibold text-slate-500">Retries</div>
+                  <div className="text-slate-700">{selectedNodeDetails.retryCount}</div>
+                </div>
+              )}
+
               <div>
                 <div className="mb-1 font-semibold text-slate-500">Input Received</div>
                 <div className="max-h-24 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700 whitespace-pre-wrap">
@@ -402,6 +768,28 @@ export default function WorkflowCanvas() {
         
         <Panel position="top-right" className="bg-white p-4 rounded-lg shadow-md border border-gray-200 w-96">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">Workflow Controls</h3>
+          {currentRunId && (
+            <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Persisted run <span className="font-semibold text-slate-800">#{currentRunId}</span>
+            </div>
+          )}
+
+          <div className="mb-3">
+            <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Templates</div>
+            <div className="grid grid-cols-3 gap-2">
+              {workflowTemplates.map((template) => (
+                <button
+                  key={template.name}
+                  type="button"
+                  onClick={() => loadTemplate(template)}
+                  disabled={isRunning || isReplaying}
+                  className="rounded border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:text-slate-400"
+                >
+                  {template.name}
+                </button>
+              ))}
+            </div>
+          </div>
           
           <div className="mb-3">
             <label className="block text-xs font-medium text-gray-500 mb-1">Initial Prompt</label>
@@ -424,13 +812,51 @@ export default function WorkflowCanvas() {
 
           <button 
             onClick={executeWorkflow}
-            disabled={isRunning || !promptText.trim() || nodes.length === 0}
+            disabled={isRunning || isReplaying || !promptText.trim() || nodes.length === 0}
             className={`w-full py-2 px-4 rounded-md text-white font-medium transition-colors ${
-              isRunning || !promptText.trim() || nodes.length === 0 ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
+              isRunning || isReplaying || !promptText.trim() || nodes.length === 0 ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
-            {isRunning ? "Streaming execution..." : "Run AI Workflow"}
+            {isRunning ? "Streaming execution..." : isReplaying ? "Replaying run..." : "Run AI Workflow"}
           </button>
+
+          {(runsError || recentRuns.length > 0) && (
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold uppercase text-slate-500">Previous Runs</h4>
+                <button
+                  type="button"
+                  onClick={loadRecentRuns}
+                  className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:bg-slate-50"
+                >
+                  Refresh
+                </button>
+              </div>
+              {runsError && (
+                <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {runsError}
+                </div>
+              )}
+              <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
+                {recentRuns.map((run) => (
+                  <div key={run.run_id} className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-xs">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-slate-700">Run #{run.run_id}</div>
+                      <div className="truncate text-[10px] text-slate-500">{run.initial_prompt}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => replayRun(run.run_id)}
+                      disabled={isRunning || isReplaying}
+                      className="shrink-0 rounded border border-indigo-200 bg-white px-2 py-1 text-[10px] font-semibold text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                    >
+                      Replay
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {runResult && (
             <div className="mt-4 p-3 bg-slate-50 rounded border border-slate-200 text-xs text-slate-800 whitespace-pre-wrap max-h-96 overflow-y-auto">

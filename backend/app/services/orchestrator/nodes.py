@@ -14,6 +14,8 @@ class GraphState(TypedDict):
     duration_ms: NotRequired[int]
     input_text: NotRequired[str]
     output_text: NotRequired[str]
+    error: NotRequired[str]
+    retry_count: NotRequired[int]
 
 # FIX: Swapped to the active 3.1 model!
 llm = ChatGroq(
@@ -42,18 +44,41 @@ def create_llm_node(node_label: str, system_prompt: str):
         
         prompt_template = PromptTemplate.from_template(template)
         chain = prompt_template | llm
-        
-        print(f"Running LLM for node: {node_label}...")
-        response = chain.invoke({"text": input_text})
+
+        max_attempts = 2
+        last_error = ""
+
+        for attempt in range(max_attempts):
+            try:
+                print(f"Running LLM for node: {node_label}... attempt {attempt + 1}")
+                response = chain.invoke({"text": input_text})
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+
+                new_data = f"{current_data}\n\n[{node_label}]: {response.content}" if current_data else f"[{node_label}]: {response.content}"
+
+                return {
+                    "processed_data": new_data,
+                    "status": f"Successfully processed by {node_label}",
+                    "duration_ms": duration_ms,
+                    "input_text": input_text,
+                    "output_text": response.content,
+                    "retry_count": attempt,
+                }
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < max_attempts - 1:
+                    time.sleep(0.5)
+
         duration_ms = int((time.perf_counter() - started_at) * 1000)
-        
-        new_data = f"{current_data}\n\n[{node_label}]: {response.content}" if current_data else f"[{node_label}]: {response.content}"
-        
+        error_output = f"[{node_label} failed]: {last_error}"
+
         return {
-            "processed_data": new_data,
-            "status": f"Successfully processed by {node_label}",
+            "processed_data": current_data,
+            "status": f"Failed to process {node_label}",
             "duration_ms": duration_ms,
             "input_text": input_text,
-            "output_text": response.content,
+            "output_text": error_output,
+            "error": last_error,
+            "retry_count": max_attempts - 1,
         }
     return llm_node

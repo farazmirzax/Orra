@@ -15,6 +15,22 @@ router = APIRouter()
 async def health_check():
     return {"status": "healthy", "service": "Orra Execution Engine"}
 
+@router.get("/runs")
+async def list_runs(db: Session = Depends(get_db)):
+    runs = db.query(WorkflowRun).order_by(WorkflowRun.created_at.desc()).limit(10).all()
+    return {
+        "runs": [
+            {
+                "run_id": run.id,
+                "workflow_id": run.workflow_id,
+                "initial_prompt": run.initial_prompt,
+                "final_status": run.final_status,
+                "created_at": run.created_at,
+            }
+            for run in runs
+        ]
+    }
+
 @router.post("/execute")
 async def execute_workflow(request: ExecuteRequest, db: Session = Depends(get_db)):
     db_run = WorkflowRun(
@@ -83,7 +99,16 @@ async def get_run_logs(run_id: int, db: Session = Depends(get_db)):
     }
 
 @router.post("/execute-stream")
-async def execute_workflow_stream(request: ExecuteRequest):
+async def execute_workflow_stream(request: ExecuteRequest, db: Session = Depends(get_db)):
+    db_run = WorkflowRun(
+        workflow_id=request.workflow_id,
+        initial_prompt=request.initial_prompt,
+        final_status="running"
+    )
+    db.add(db_run)
+    db.commit()
+    db.refresh(db_run)
+
     # 1. Compile the graph on the fly
     dynamic_workflow = compile_dynamic_graph(request.nodes, request.edges)
     
@@ -99,10 +124,44 @@ async def execute_workflow_stream(request: ExecuteRequest):
             payload["timestamp"] = datetime.now(timezone.utc).isoformat()
             return f"data: {json.dumps(payload)}\n\n"
 
-        yield sse_payload({
+        def persist_log(node_name: str, payload: dict):
+            node_log = NodeLog(
+                run_id=db_run.id,
+                node_name=node_name,
+                state_snapshot=json.dumps(payload)
+            )
+            db.add(node_log)
+            db.commit()
+
+        workflow_started = {
             "type": "workflow_started",
+            "run_id": db_run.id,
             "nodes": [node.id for node in request.nodes],
-        })
+            "workflow": {
+                "nodes": [
+                    {
+                        "id": node.id,
+                        "label": node.label,
+                        "system_prompt": node.system_prompt,
+                        "x": node.x,
+                        "y": node.y,
+                    }
+                    for node in request.nodes
+                ],
+                "edges": [
+                    {
+                        "source": edge.source,
+                        "target": edge.target,
+                    }
+                    for edge in request.edges
+                ],
+            },
+        }
+        persist_log("__workflow__", workflow_started)
+        yield sse_payload(workflow_started)
+
+        final_state = {}
+        has_failure = False
 
         # Stream the LangGraph execution
         for event in dynamic_workflow.stream(initial_state):
@@ -110,30 +169,49 @@ async def execute_workflow_stream(request: ExecuteRequest):
 
                 node_label = next((node.label for node in request.nodes if node.id == node_name), node_name)
 
-                yield sse_payload({
+                node_started = {
                     "type": "node_started",
+                    "run_id": db_run.id,
                     "node": node_name,
                     "node_label": node_label,
-                })
+                }
+                persist_log(node_name, node_started)
+                yield sse_payload(node_started)
 
                 await asyncio.sleep(0.05)
 
-                yield sse_payload({
-                    "type": "node_completed",
+                node_finished = {
+                    "type": "node_failed" if state_update.get("error") else "node_completed",
+                    "run_id": db_run.id,
                     "node": node_name,
                     "node_label": node_label,
                     "data": state_update.get("processed_data", ""),
                     "duration_ms": state_update.get("duration_ms"),
                     "input_text": state_update.get("input_text", ""),
                     "output_text": state_update.get("output_text", ""),
-                })
+                    "error": state_update.get("error"),
+                    "retry_count": state_update.get("retry_count", 0),
+                }
+                if state_update.get("error"):
+                    has_failure = True
+
+                persist_log(node_name, {**node_finished, "state": state_update})
+                final_state.update(state_update)
+                yield sse_payload(node_finished)
 
                 # Tiny artificial delay just so the visual effect looks incredibly smooth
                 await asyncio.sleep(0.2) 
 
-        yield sse_payload({
+        db_run.final_status = "failed" if has_failure else final_state.get("status", "completed")
+        db.commit()
+
+        workflow_completed = {
             "type": "workflow_completed",
-        })
+            "run_id": db_run.id,
+            "final_status": db_run.final_status,
+        }
+        persist_log("__workflow__", workflow_completed)
+        yield sse_payload(workflow_completed)
 
         # Tell the frontend we are finished
         yield "data: [DONE]\n\n"
