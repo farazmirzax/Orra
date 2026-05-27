@@ -3,13 +3,29 @@ import asyncio
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from app.schemas.payload import ExecuteRequest
+from app.schemas.payload import ExecuteRequest, TraceEndRequest, TraceEventRequest, TraceStartRequest
 from app.services.orchestrator.graph import compile_dynamic_graph
 from app.core.database import get_db
 from app.models.workflow import WorkflowRun, NodeLog
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
+
+def timestamped_payload(payload: dict):
+    return {
+        **payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+def persist_log(db: Session, run_id: int, node_name: str, payload: dict):
+    node_log = NodeLog(
+        run_id=run_id,
+        node_name=node_name,
+        state_snapshot=json.dumps(payload)
+    )
+    db.add(node_log)
+    db.commit()
+    return node_log
 
 @router.get("/health")
 async def health_check():
@@ -30,6 +46,113 @@ async def list_runs(db: Session = Depends(get_db)):
             for run in runs
         ]
     }
+
+@router.post("/traces/start")
+async def start_trace(request: TraceStartRequest, db: Session = Depends(get_db)):
+    db_run = WorkflowRun(
+        workflow_id=request.workflow_id,
+        initial_prompt=request.initial_prompt,
+        final_status="running"
+    )
+    db.add(db_run)
+    db.commit()
+    db.refresh(db_run)
+
+    payload = timestamped_payload({
+        "type": "workflow_started",
+        "run_id": db_run.id,
+        "nodes": [node.id for node in request.nodes],
+        "workflow": {
+            "nodes": [
+                {
+                    "id": node.id,
+                    "label": node.label,
+                    "system_prompt": node.system_prompt,
+                    "x": node.x,
+                    "y": node.y,
+                }
+                for node in request.nodes
+            ],
+            "edges": [
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                }
+                for edge in request.edges
+            ],
+        },
+    })
+    persist_log(db, db_run.id, "__workflow__", payload)
+
+    return {
+        "run_id": db_run.id,
+        "workflow_id": db_run.workflow_id,
+        "status": db_run.final_status,
+    }
+
+@router.post("/traces/events")
+async def record_trace_event(request: TraceEventRequest, db: Session = Depends(get_db)):
+    run = db.query(WorkflowRun).filter(WorkflowRun.id == request.run_id).first()
+    if not run:
+        return {"error": "Run not found"}
+
+    event_type_map = {
+        "started": "node_started",
+        "completed": "node_completed",
+        "failed": "node_failed",
+        "node_started": "node_started",
+        "node_completed": "node_completed",
+        "node_failed": "node_failed",
+    }
+    event_type = event_type_map.get(request.event_type, request.event_type)
+    node_name = request.node or "__workflow__"
+
+    payload = timestamped_payload({
+        "type": event_type,
+        "run_id": request.run_id,
+        "node": request.node,
+        "node_label": request.node_label or request.node,
+        "data": request.data,
+        "duration_ms": request.duration_ms,
+        "input_text": request.input_text,
+        "output_text": request.output_text,
+        "error": request.error,
+        "retry_count": request.retry_count,
+        "state": {
+            "processed_data": request.data,
+            "duration_ms": request.duration_ms,
+            "input_text": request.input_text,
+            "output_text": request.output_text,
+            "error": request.error,
+            "retry_count": request.retry_count,
+        },
+    })
+    persist_log(db, request.run_id, node_name, payload)
+
+    if event_type == "node_failed":
+        run.final_status = "failed"
+        db.commit()
+
+    return {"ok": True, "run_id": request.run_id, "event_type": event_type}
+
+@router.post("/traces/end")
+async def end_trace(request: TraceEndRequest, db: Session = Depends(get_db)):
+    run = db.query(WorkflowRun).filter(WorkflowRun.id == request.run_id).first()
+    if not run:
+        return {"error": "Run not found"}
+
+    if run.final_status != "failed":
+        run.final_status = request.final_status
+    db.commit()
+
+    payload = timestamped_payload({
+        "type": "workflow_completed",
+        "run_id": request.run_id,
+        "final_status": run.final_status,
+    })
+    persist_log(db, request.run_id, "__workflow__", payload)
+
+    return {"ok": True, "run_id": request.run_id, "final_status": run.final_status}
 
 @router.post("/execute")
 async def execute_workflow(request: ExecuteRequest, db: Session = Depends(get_db)):

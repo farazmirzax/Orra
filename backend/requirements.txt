@@ -3,4 +3,5 @@ uvicorn
 pydantic
 langgraph
 langchain-core
+langchain-groq
 sqlalchemy
