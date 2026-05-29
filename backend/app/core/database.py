@@ -1,8 +1,16 @@
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# We use a local SQLite file named 'orra.db'
-SQLALCHEMY_DATABASE_URL = "sqlite:///./orra.db"
+# Check if Vercel's environment variable exists
+IS_VERCEL = os.environ.get("VERCEL")
+
+if IS_VERCEL:
+    # Vercel only allows writing to the /tmp folder! (Requires 4 slashes for absolute path)
+    SQLALCHEMY_DATABASE_URL = "sqlite:////tmp/orra.db"
+else:
+    # Local development uses the normal project folder (3 slashes for relative path)
+    SQLALCHEMY_DATABASE_URL = "sqlite:///./orra.db"
 
 # connect_args is needed only for SQLite to prevent thread issues
 engine = create_engine(
