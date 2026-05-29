@@ -2,6 +2,10 @@ fastapi
 uvicorn
 pydantic
 langgraph
+langchain
 langchain-core
 langchain-groq
+langchain-community
+duckduckgo-search
 sqlalchemy
+python-dotenv
