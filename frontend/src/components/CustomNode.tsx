@@ -5,6 +5,7 @@ type CustomNodeData = {
   label: string;
   systemPrompt?: string;
   status?: "idle" | "queued" | "running" | "success" | "failed";
+  readOnly?: boolean;
 };
 
 type CustomNodeType = Node<CustomNodeData, "custom">;
@@ -13,6 +14,7 @@ export default function CustomNode({ id, data }: NodeProps<CustomNodeType>) {
   const { updateNodeData, setNodes, setEdges } = useReactFlow();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const status = data.status || "idle";
+  const isReadOnly = data.readOnly ?? false;
 
   const statusStyles = {
     idle: {
@@ -54,6 +56,7 @@ export default function CustomNode({ id, data }: NodeProps<CustomNodeType>) {
 
   return (
     <div className={`relative p-3 shadow-md rounded-md bg-white border-2 transition-all duration-300 w-64 ${statusStyles.border}`}>
+      {!isReadOnly && (
       <div className="nodrag nopan absolute top-2 right-2 z-10">
         <button
           type="button"
@@ -108,27 +111,28 @@ export default function CustomNode({ id, data }: NodeProps<CustomNodeType>) {
           </div>
         )}
       </div>
+      )}
 
       <Handle type="target" position={Position.Top} className={`w-2 h-2 ${statusStyles.handle}`} />
 
-      <input
-        className="font-bold text-slate-800 text-sm w-full pr-8 outline-none bg-transparent border-b border-transparent focus:border-indigo-200 mb-2"
-        value={data.label}
-        onChange={(e) => updateNodeData(id, { label: e.target.value })}
-        placeholder="Agent Name..."
-      />
+      {isReadOnly ? (
+        <div className="mb-2 pr-8 text-sm font-bold text-slate-800">{data.label}</div>
+      ) : (
+        <input
+          className="font-bold text-slate-800 text-sm w-full pr-8 outline-none bg-transparent border-b border-transparent focus:border-indigo-200 mb-2"
+          value={data.label}
+          onChange={(e) => updateNodeData(id, { label: e.target.value })}
+          placeholder="Agent Name..."
+        />
+      )}
 
       <div className={`mb-2 inline-flex rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusStyles.badge}`}>
         {statusStyles.label}
       </div>
 
-      <textarea
-        className="w-full text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-200 outline-none focus:border-indigo-400 resize-none"
-        rows={3}
-        value={data.systemPrompt || ""}
-        onChange={(e) => updateNodeData(id, { systemPrompt: e.target.value })}
-        placeholder="Enter instructions for this agent..."
-      />
+      <div className="min-h-20 rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
+        {data.systemPrompt || "No instructions captured."}
+      </div>
 
       <Handle type="source" position={Position.Bottom} className={`w-2 h-2 ${statusStyles.handle}`} />
     </div>

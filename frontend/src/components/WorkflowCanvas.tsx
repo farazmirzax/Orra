@@ -1,20 +1,14 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ReactFlow,
-  Controls,
   Background,
-  addEdge,
-  applyNodeChanges,
-  applyEdgeChanges,
-  Connection,
-  NodeChange,
-  EdgeChange,
-  Node,
-  Edge,
   BackgroundVariant,
-  Panel
+  Controls,
+  Edge,
+  Node,
+  Panel,
+  ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import CustomNode from "./CustomNode";
@@ -25,9 +19,24 @@ type WorkflowNodeData = {
   label: string;
   systemPrompt?: string;
   status?: NodeStatus;
+  readOnly?: boolean;
 };
 
-type StreamEvent = {
+type WorkflowSnapshot = {
+  nodes: {
+    id: string;
+    label: string;
+    system_prompt?: string;
+    x?: number | null;
+    y?: number | null;
+  }[];
+  edges: {
+    source: string;
+    target: string;
+  }[];
+};
+
+type TraceEvent = {
   type: "workflow_started" | "node_started" | "node_completed" | "node_failed" | "workflow_completed";
   run_id?: number;
   workflow?: WorkflowSnapshot;
@@ -40,6 +49,14 @@ type StreamEvent = {
   error?: string;
   retry_count?: number;
   timestamp?: string;
+  state?: {
+    processed_data?: string;
+    duration_ms?: number;
+    input_text?: string;
+    output_text?: string;
+    error?: string;
+    retry_count?: number;
+  };
 };
 
 type TimelineEvent = {
@@ -69,33 +86,10 @@ type RunSummary = {
   created_at: string;
 };
 
-type WorkflowSnapshot = {
-  nodes: {
-    id: string;
-    label: string;
-    system_prompt?: string;
-    x?: number | null;
-    y?: number | null;
-  }[];
-  edges: {
-    source: string;
-    target: string;
-  }[];
-};
-
 type RunStep = {
   step_id: number;
   node: string;
-  state_snapshot: StreamEvent & {
-    state?: {
-      processed_data?: string;
-      duration_ms?: number;
-      input_text?: string;
-      output_text?: string;
-      error?: string;
-      retry_count?: number;
-    };
-  };
+  state_snapshot: TraceEvent;
   timestamp: string;
 };
 
@@ -106,67 +100,6 @@ type RunDetails = {
   execution_steps: RunStep[];
 };
 
-// Start with a completely blank canvas!
-const initialNodes: Node<WorkflowNodeData>[] = [];
-const initialEdges: Edge[] = [];
-
-const workflowTemplates = [
-  {
-    name: "Research",
-    prompt: "Research current trends in bioinformatics and summarize the most important themes.",
-    nodes: [
-      {
-        label: "Researcher",
-        systemPrompt: "Find the most relevant information and identify the key facts, patterns, and open questions.",
-      },
-      {
-        label: "Fact Checker",
-        systemPrompt: "Check the research for accuracy, uncertainty, and claims that need stronger evidence.",
-      },
-      {
-        label: "Summarizer",
-        systemPrompt: "Turn the reviewed research into a concise executive summary with clear takeaways.",
-      },
-    ],
-  },
-  {
-    name: "Coding",
-    prompt: "Plan and review an implementation for a small feature.",
-    nodes: [
-      {
-        label: "Planner",
-        systemPrompt: "Break the feature request into a practical implementation plan.",
-      },
-      {
-        label: "Code Generator",
-        systemPrompt: "Describe the code changes needed to implement the plan cleanly.",
-      },
-      {
-        label: "Reviewer",
-        systemPrompt: "Review the proposed implementation for bugs, edge cases, and missing tests.",
-      },
-    ],
-  },
-  {
-    name: "Content",
-    prompt: "Create a short product announcement for a developer tool.",
-    nodes: [
-      {
-        label: "Writer",
-        systemPrompt: "Draft clear, concise copy for a technical audience.",
-      },
-      {
-        label: "SEO Optimizer",
-        systemPrompt: "Improve discoverability while keeping the writing natural and specific.",
-      },
-      {
-        label: "Editor",
-        systemPrompt: "Polish the final copy for clarity, tone, and flow.",
-      },
-    ],
-  },
-];
-
 function formatTimelineTime(timestamp?: string) {
   return new Date(timestamp || Date.now()).toLocaleTimeString([], {
     hour: "2-digit",
@@ -175,21 +108,34 @@ function formatTimelineTime(timestamp?: string) {
   });
 }
 
+function statusDot(status: NodeStatus | "info") {
+  if (status === "running") return "bg-green-500";
+  if (status === "success") return "bg-emerald-500";
+  if (status === "failed") return "bg-red-500";
+  if (status === "queued") return "bg-amber-500";
+  return "bg-slate-400";
+}
+
+function statusBadge(status: NodeStatus | string) {
+  if (status === "running") return "bg-green-50 text-green-700";
+  if (status === "success") return "bg-emerald-50 text-emerald-700";
+  if (status === "failed") return "bg-red-50 text-red-700";
+  if (status === "queued") return "bg-amber-50 text-amber-700";
+  return "bg-slate-100 text-slate-500";
+}
+
 export default function WorkflowCanvas() {
-  const [nodes, setNodes] = useState<Node<WorkflowNodeData>[]>(initialNodes);
-  const [edges, setEdges] = useState<Edge[]>(initialEdges);
-  const [isRunning, setIsRunning] = useState(false);
+  const [nodes, setNodes] = useState<Node<WorkflowNodeData>[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [currentRun, setCurrentRun] = useState<RunSummary | null>(null);
+  const [currentRunId, setCurrentRunId] = useState<number | null>(null);
   const [runResult, setRunResult] = useState<string | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeDetails, setNodeDetails] = useState<Record<string, NodeExecutionDetails>>({});
-  const [currentRunId, setCurrentRunId] = useState<number | null>(null);
-  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
-  const [runsError, setRunsError] = useState<string | null>(null);
   const [isReplaying, setIsReplaying] = useState(false);
-  
-  // Start with an empty prompt
-  const [promptText, setPromptText] = useState("");
 
   const nodeTypes = useMemo(() => ({ custom: CustomNode }), []);
   const selectedNode = useMemo(
@@ -198,28 +144,11 @@ export default function WorkflowCanvas() {
   );
   const selectedNodeDetails = selectedNode ? nodeDetails[selectedNode.id] : undefined;
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange<Node<WorkflowNodeData>>[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    []
-  );
-  
-  const onEdgesChange = useCallback(
-    (changes: EdgeChange<Edge>[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    []
-  );
-
-  const onConnect = useCallback(
-    (connection: Connection) => setEdges((eds) => addEdge({ ...connection, animated: true }, eds)),
-    []
-  );
-
   const loadRecentRuns = useCallback(async () => {
     try {
       setRunsError(null);
       const response = await fetch("http://127.0.0.1:8000/api/runs");
-      if (!response.ok) {
-        throw new Error("Run history request failed.");
-      }
+      if (!response.ok) throw new Error("Run history request failed.");
       const data = await response.json();
       setRecentRuns(data.runs || []);
     } catch (error) {
@@ -234,9 +163,7 @@ export default function WorkflowCanvas() {
     const loadInitialRuns = async () => {
       try {
         const response = await fetch("http://127.0.0.1:8000/api/runs");
-        if (!response.ok) {
-          throw new Error("Run history request failed.");
-        }
+        if (!response.ok) throw new Error("Run history request failed.");
         const data = await response.json();
         if (isMounted) {
           setRunsError(null);
@@ -257,48 +184,6 @@ export default function WorkflowCanvas() {
     };
   }, []);
 
-  // --- NEW: Add Node Function ---
-  const addNode = () => {
-    const newNodeId = `node_${Date.now()}`; // Unique ID based on timestamp
-    const newNode: Node<WorkflowNodeData> = {
-      id: newNodeId,
-      // Drop it randomly in the middle of the screen
-      position: { x: 250 + Math.random() * 50, y: 100 + Math.random() * 50 }, 
-      data: { label: "New Agent", systemPrompt: "", status: "idle" },
-      type: "custom",
-    };
-    setNodes((nds) => [...nds, newNode]);
-  };
-
-  const loadTemplate = (template: typeof workflowTemplates[number]) => {
-    const templateNodes: Node<WorkflowNodeData>[] = template.nodes.map((node, index) => ({
-      id: `template_${Date.now()}_${index}`,
-      type: "custom",
-      position: { x: 260, y: 90 + index * 190 },
-      data: {
-        label: node.label,
-        systemPrompt: node.systemPrompt,
-        status: "idle",
-      },
-    }));
-
-    const templateEdges: Edge[] = templateNodes.slice(0, -1).map((node, index) => ({
-      id: `template_edge_${Date.now()}_${index}`,
-      source: node.id,
-      target: templateNodes[index + 1].id,
-      animated: true,
-    }));
-
-    setNodes(templateNodes);
-    setEdges(templateEdges);
-    setPromptText(template.prompt);
-    setRunResult(null);
-    setTimelineEvents([]);
-    setNodeDetails({});
-    setSelectedNodeId(null);
-    setCurrentRunId(null);
-  };
-
   const addTimelineEvent = (event: Omit<TimelineEvent, "id">) => {
     setTimelineEvents((events) => [
       ...events,
@@ -310,8 +195,8 @@ export default function WorkflowCanvas() {
   };
 
   const updateNodeStatus = (nodeId: string, status: NodeStatus) => {
-    setNodes((nds) =>
-      nds.map((node) => ({
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => ({
         ...node,
         data: {
           ...node.data,
@@ -332,198 +217,20 @@ export default function WorkflowCanvas() {
     }));
   };
 
-  const executeWorkflow = async () => {
-    if (!promptText.trim()) return; // Don't run if empty
-    if (nodes.length === 0) return; // Don't run if no agents exist
-    
-    setIsRunning(true);
-    setRunResult(""); // Clear previous results so it starts fresh
-    setTimelineEvents([]);
-    setCurrentRunId(null);
-    setNodes((nds) => nds.map((node) => ({ ...node, data: { ...node.data, status: "queued" } })));
-    setNodeDetails(
-      Object.fromEntries(
-        nodes.map((node) => [
-          node.id,
-          {
-            status: "queued" as NodeStatus,
-          },
-        ])
-      )
-    );
-
-    try {
-      const response = await fetch("http://127.0.0.1:8000/api/execute-stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workflow_id: "stream-ui-1",
-          initial_prompt: promptText,
-          nodes: nodes.map(n => ({ 
-            id: n.id, 
-            label: n.data.label as string, 
-            system_prompt: (n.data.systemPrompt as string) || "Be a helpful assistant.",
-            x: n.position.x,
-            y: n.position.y,
-          })),
-          edges: edges.map(e => ({ source: e.source, target: e.target }))
-        }),
-      });
-
-      if (!response.body) throw new Error("No readable stream available");
-
-      // Set up the stream reader
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let done = false;
-      let buffer = "";
-
-      // Loop over the incoming data chunks
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        
-        if (value) {
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n\n');
-          buffer = lines.pop() || "";
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const dataStr = line.replace('data: ', '');
-              
-              if (dataStr === '[DONE]') {
-                done = true;
-                break;
-              }
-              
-              try {
-                // Parse the JSON chunk and update the UI in real-time!
-                const parsed = JSON.parse(dataStr) as StreamEvent;
-                const nodeLabel = parsed.node_label || parsed.node || "Workflow";
-                const timestamp = parsed.timestamp || new Date().toISOString();
-
-                if (parsed.type === "workflow_started") {
-                  if (parsed.run_id) {
-                    setCurrentRunId(parsed.run_id);
-                  }
-                  addTimelineEvent({
-                    message: parsed.run_id ? `Workflow started - Run #${parsed.run_id}` : "Workflow started",
-                    timestamp,
-                    status: "info",
-                  });
-                }
-
-                if (parsed.type === "node_started" && parsed.node) {
-                  updateNodeStatus(parsed.node, "running");
-                  updateNodeDetails(parsed.node, {
-                    status: "running",
-                    startedAt: timestamp,
-                    error: undefined,
-                  });
-                  addTimelineEvent({
-                    message: `${nodeLabel} started`,
-                    timestamp,
-                    status: "running",
-                  });
-                }
-
-                if (parsed.type === "node_completed" && parsed.node) {
-                  setRunResult(parsed.data || "");
-                  updateNodeStatus(parsed.node, "success");
-                  updateNodeDetails(parsed.node, {
-                    status: "success",
-                    completedAt: timestamp,
-                    durationMs: parsed.duration_ms,
-                    inputText: parsed.input_text,
-                    outputText: parsed.output_text,
-                    retryCount: parsed.retry_count,
-                  });
-                  addTimelineEvent({
-                    message: `${nodeLabel} completed`,
-                    timestamp,
-                    status: "success",
-                    durationMs: parsed.duration_ms,
-                  });
-                }
-
-                if (parsed.type === "node_failed" && parsed.node) {
-                  setRunResult(parsed.data || parsed.output_text || parsed.error || "Node execution failed.");
-                  updateNodeStatus(parsed.node, "failed");
-                  updateNodeDetails(parsed.node, {
-                    status: "failed",
-                    completedAt: timestamp,
-                    durationMs: parsed.duration_ms,
-                    inputText: parsed.input_text,
-                    outputText: parsed.output_text,
-                    error: parsed.error || "Node execution failed.",
-                    retryCount: parsed.retry_count,
-                  });
-                  addTimelineEvent({
-                    message: `${nodeLabel} failed`,
-                    timestamp,
-                    status: "failed",
-                    durationMs: parsed.duration_ms,
-                  });
-                }
-
-                if (parsed.type === "workflow_completed") {
-                  addTimelineEvent({
-                    message: "Workflow completed",
-                    timestamp,
-                    status: "success",
-                  });
-                  loadRecentRuns();
-                }
-              } catch (e) {
-                console.error("Error parsing stream chunk", e);
-              }
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error("Execution failed:", error);
-      setRunResult("Error connecting to backend stream.");
-      setNodes((nds) =>
-        nds.map((node) => ({
-          ...node,
-          data: {
-            ...node.data,
-            status: node.data.status === "queued" || node.data.status === "running" ? "failed" : node.data.status,
-          },
-        }))
-      );
-      setNodeDetails((currentDetails) =>
-        Object.fromEntries(
-          Object.entries(currentDetails).map(([nodeId, details]) => [
-            nodeId,
-            details.status === "queued" || details.status === "running"
-              ? { ...details, status: "failed", completedAt: new Date().toISOString(), error: "Workflow failed before completion." }
-              : details,
-          ])
-        )
-      );
-      addTimelineEvent({
-        message: "Workflow failed",
-        timestamp: new Date().toISOString(),
-        status: "failed",
-      });
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  const replayRun = async (runId: number) => {
+  const inspectRun = async (run: RunSummary) => {
     setIsReplaying(true);
-    setCurrentRunId(runId);
+    setCurrentRun(run);
+    setCurrentRunId(run.run_id);
     setTimelineEvents([]);
     setRunResult("");
     setSelectedNodeId(null);
+    setNodeDetails({});
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/runs/${runId}`);
-      const runDetails = await response.json() as RunDetails;
+      const response = await fetch(`http://127.0.0.1:8000/api/runs/${run.run_id}`);
+      if (!response.ok) throw new Error("Run details request failed.");
+
+      const runDetails = (await response.json()) as RunDetails;
       const steps = runDetails.execution_steps || [];
       const workflowStarted = steps.find((step) => step.state_snapshot.type === "workflow_started");
       const workflow = workflowStarted?.state_snapshot.workflow;
@@ -534,19 +241,20 @@ export default function WorkflowCanvas() {
             id: node.id,
             type: "custom",
             position: {
-              x: typeof node.x === "number" ? node.x : 220 + index * 60,
-              y: typeof node.y === "number" ? node.y : 120 + index * 160,
+              x: typeof node.x === "number" ? node.x : 260,
+              y: typeof node.y === "number" ? node.y : 120 + index * 180,
             },
             data: {
               label: node.label,
               systemPrompt: node.system_prompt || "",
               status: "idle",
+              readOnly: true,
             },
           }))
         );
         setEdges(
           workflow.edges.map((edge, index) => ({
-            id: `replay-${runId}-${index}`,
+            id: `trace-${run.run_id}-${index}`,
             source: edge.source,
             target: edge.target,
             animated: true,
@@ -572,22 +280,20 @@ export default function WorkflowCanvas() {
                 label: nodeEvent?.state_snapshot.node_label || nodeId,
                 systemPrompt: "",
                 status: "idle",
+                readOnly: true,
               },
             };
           })
         );
-
         setEdges(
           replayNodeIds.slice(0, -1).map((nodeId, index) => ({
-            id: `replay-${runId}-fallback-${index}`,
+            id: `trace-${run.run_id}-fallback-${index}`,
             source: nodeId,
             target: replayNodeIds[index + 1],
             animated: true,
           }))
         );
       }
-
-      setNodeDetails({});
 
       for (const step of steps) {
         const event = step.state_snapshot;
@@ -596,7 +302,7 @@ export default function WorkflowCanvas() {
 
         if (event.type === "workflow_started") {
           addTimelineEvent({
-            message: `Replay started - Run #${runId}`,
+            message: `Trace loaded - Run #${run.run_id}`,
             timestamp,
             status: "info",
           });
@@ -620,12 +326,12 @@ export default function WorkflowCanvas() {
           updateNodeDetails(event.node, {
             status: "success",
             completedAt: timestamp,
-            durationMs: event.duration_ms,
+            durationMs: event.duration_ms || event.state?.duration_ms,
             inputText: event.input_text || event.state?.input_text,
             outputText: event.output_text || event.state?.output_text,
             retryCount: event.retry_count || event.state?.retry_count,
           });
-          setRunResult(event.data || event.state?.processed_data || "");
+          setRunResult(event.data || event.state?.processed_data || event.output_text || "");
           addTimelineEvent({
             message: `${nodeLabel} completed`,
             timestamp,
@@ -639,7 +345,7 @@ export default function WorkflowCanvas() {
           updateNodeDetails(event.node, {
             status: "failed",
             completedAt: timestamp,
-            durationMs: event.duration_ms,
+            durationMs: event.duration_ms || event.state?.duration_ms,
             inputText: event.input_text || event.state?.input_text,
             outputText: event.output_text || event.state?.output_text,
             error: event.error || event.state?.error || "Node execution failed.",
@@ -656,18 +362,18 @@ export default function WorkflowCanvas() {
 
         if (event.type === "workflow_completed") {
           addTimelineEvent({
-            message: "Replay completed",
+            message: "Trace completed",
             timestamp,
-            status: "success",
+            status: runDetails.final_status === "failed" ? "failed" : "success",
           });
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 350));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
     } catch (error) {
-      console.error("Replay failed:", error);
+      console.error("Trace inspection failed:", error);
       addTimelineEvent({
-        message: "Replay failed",
+        message: "Trace inspection failed",
         timestamp: new Date().toISOString(),
         status: "failed",
       });
@@ -676,15 +382,18 @@ export default function WorkflowCanvas() {
     }
   };
 
+  const totalDuration = timelineEvents.reduce((total, event) => total + (event.durationMs || 0), 0);
+  const failedNodes = Object.values(nodeDetails).filter((details) => details.status === "failed").length;
+
   return (
     <div className="h-full w-full bg-slate-50">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
+        nodesConnectable={false}
+        nodesDraggable={false}
+        edgesFocusable={false}
         onNodeClick={(_, node) => setSelectedNodeId(node.id)}
         onPaneClick={() => setSelectedNodeId(null)}
         fitView
@@ -692,33 +401,30 @@ export default function WorkflowCanvas() {
         <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
         <Controls />
 
+        {nodes.length === 0 && (
+          <Panel position="top-center" className="rounded-lg border border-slate-200 bg-white px-5 py-4 text-center shadow-sm">
+            <div className="text-sm font-semibold text-slate-800">No trace selected</div>
+            <div className="mt-1 text-xs text-slate-500">Pick a run from the inspector to visualize its agent execution graph.</div>
+          </Panel>
+        )}
+
         {selectedNode && (
           <Panel position="bottom-left" className="w-96 rounded-lg border border-slate-200 bg-white p-4 shadow-md">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold text-slate-800">{selectedNode.data.label}</h3>
-                <p className="text-xs text-slate-500">Node Details</p>
+                <p className="text-xs text-slate-500">Node Inspector</p>
               </div>
-              <span className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase ${
-                selectedNode.data.status === "running"
-                  ? "bg-green-50 text-green-700"
-                  : selectedNode.data.status === "success"
-                    ? "bg-emerald-50 text-emerald-700"
-                    : selectedNode.data.status === "failed"
-                      ? "bg-red-50 text-red-700"
-                      : selectedNode.data.status === "queued"
-                        ? "bg-amber-50 text-amber-700"
-                        : "bg-slate-100 text-slate-500"
-              }`}>
+              <span className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase ${statusBadge(selectedNode.data.status || "idle")}`}>
                 {selectedNode.data.status || "idle"}
               </span>
             </div>
 
             <div className="space-y-3 text-xs">
               <div>
-                <div className="mb-1 font-semibold text-slate-500">System Prompt</div>
+                <div className="mb-1 font-semibold text-slate-500">Instructions</div>
                 <div className="max-h-20 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">
-                  {selectedNode.data.systemPrompt || "Be a helpful assistant."}
+                  {selectedNode.data.systemPrompt || "No instructions captured for this trace."}
                 </div>
               </div>
 
@@ -741,16 +447,16 @@ export default function WorkflowCanvas() {
               )}
 
               <div>
-                <div className="mb-1 font-semibold text-slate-500">Input Received</div>
-                <div className="max-h-24 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700 whitespace-pre-wrap">
-                  {selectedNodeDetails?.inputText || "No input captured yet."}
+                <div className="mb-1 font-semibold text-slate-500">Input</div>
+                <div className="max-h-24 overflow-y-auto whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">
+                  {selectedNodeDetails?.inputText || "No input captured."}
                 </div>
               </div>
 
               <div>
-                <div className="mb-1 font-semibold text-slate-500">Response Generated</div>
-                <div className="max-h-28 overflow-y-auto rounded border border-slate-200 bg-slate-50 p-2 text-slate-700 whitespace-pre-wrap">
-                  {selectedNodeDetails?.outputText || "No response captured yet."}
+                <div className="mb-1 font-semibold text-slate-500">Output</div>
+                <div className="max-h-28 overflow-y-auto whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 p-2 text-slate-700">
+                  {selectedNodeDetails?.outputText || "No output captured."}
                 </div>
               </div>
 
@@ -765,85 +471,53 @@ export default function WorkflowCanvas() {
             </div>
           </Panel>
         )}
-        
-        <Panel position="top-right" className="max-h-[calc(100vh-7rem)] w-96 overflow-y-auto rounded-lg border border-gray-200 bg-white p-4 shadow-md">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Workflow Controls</h3>
-          {currentRunId && (
-            <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              Persisted run <span className="font-semibold text-slate-800">#{currentRunId}</span>
+
+        <Panel position="top-right" className="max-h-[calc(100vh-7rem)] w-[28rem] overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-md">
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold text-slate-800">Run Inspector</h3>
+            <p className="mt-1 text-xs text-slate-500">SDK traces and persisted agent workflow runs appear here.</p>
+          </div>
+
+          {currentRun && (
+            <div className="mb-4 rounded border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-800">Run #{currentRun.run_id}</div>
+                  <div className="truncate text-xs text-slate-500">{currentRun.workflow_id}</div>
+                </div>
+                <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold uppercase ${statusBadge(currentRun.final_status === "failed" ? "failed" : "success")}`}>
+                  {currentRun.final_status === "failed" ? "failed" : "loaded"}
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded border border-slate-200 bg-white p-2">
+                  <div className="font-semibold text-slate-500">Duration</div>
+                  <div className="text-slate-700">{totalDuration} ms</div>
+                </div>
+                <div className="rounded border border-slate-200 bg-white p-2">
+                  <div className="font-semibold text-slate-500">Failures</div>
+                  <div className="text-slate-700">{failedNodes}</div>
+                </div>
+              </div>
             </div>
           )}
 
-          <div className="mb-3">
-            <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Templates</div>
-            <div className="grid grid-cols-3 gap-2">
-              {workflowTemplates.map((template) => (
-                <button
-                  key={template.name}
-                  type="button"
-                  onClick={() => loadTemplate(template)}
-                  disabled={isRunning || isReplaying}
-                  className="rounded border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:text-slate-400"
-                >
-                  {template.name}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-          <div className="mb-3">
-            <label className="block text-xs font-medium text-gray-500 mb-1">Initial Prompt</label>
-            <textarea
-              className="w-full text-sm p-2 border border-gray-300 rounded focus:ring-indigo-500 focus:border-indigo-500"
-              rows={3}
-              value={promptText}
-              onChange={(e) => setPromptText(e.target.value)}
-              placeholder="Ask the agents something..."
-            />
-          </div>
-
-          {/* --- NEW: Add Agent Button --- */}
-          <button 
-            onClick={addNode}
-            className="w-full mb-2 py-2 px-4 rounded-md text-indigo-600 bg-indigo-50 border border-indigo-200 font-medium hover:bg-indigo-100 transition-colors"
-          >
-            + Add New Agent
-          </button>
-
-          <button 
-            onClick={executeWorkflow}
-            disabled={isRunning || isReplaying || !promptText.trim() || nodes.length === 0}
-            className={`w-full py-2 px-4 rounded-md text-white font-medium transition-colors ${
-              isRunning || isReplaying || !promptText.trim() || nodes.length === 0 ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"
-            }`}
-          >
-            {isRunning ? "Streaming execution..." : isReplaying ? "Replaying run..." : "Run AI Workflow"}
-          </button>
-
           {runResult && (
-            <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
-              <div className="mb-2 font-semibold">Execution Output:</div>
-              <div className="max-h-56 overflow-y-auto whitespace-pre-wrap pr-1">
+            <div className="mb-4 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
+              <div className="mb-2 font-semibold">Final Output</div>
+              <div className="max-h-48 overflow-y-auto whitespace-pre-wrap pr-1">
                 {runResult}
               </div>
             </div>
           )}
 
           {timelineEvents.length > 0 && (
-            <div className="mt-4 border-t border-slate-200 pt-3">
+            <div className="mb-4 border-t border-slate-200 pt-3">
               <h4 className="mb-2 text-xs font-semibold uppercase text-slate-500">Execution Timeline</h4>
-              <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
+              <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
                 {timelineEvents.map((event) => (
                   <div key={event.id} className="flex items-start gap-2 text-xs text-slate-700">
-                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
-                      event.status === "running"
-                        ? "bg-green-500"
-                        : event.status === "success"
-                          ? "bg-emerald-500"
-                          : event.status === "failed"
-                            ? "bg-red-500"
-                            : "bg-slate-400"
-                    }`} />
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${statusDot(event.status)}`} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate font-medium">{event.message}</span>
@@ -859,43 +533,54 @@ export default function WorkflowCanvas() {
             </div>
           )}
 
-          {(runsError || recentRuns.length > 0) && (
-            <div className="mt-4 border-t border-slate-200 pt-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-xs font-semibold uppercase text-slate-500">Previous Runs</h4>
-                <button
-                  type="button"
-                  onClick={loadRecentRuns}
-                  className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:bg-slate-50"
-                >
-                  Refresh
-                </button>
+          <div className="border-t border-slate-200 pt-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h4 className="text-xs font-semibold uppercase text-slate-500">Recent Runs</h4>
+              <button
+                type="button"
+                onClick={loadRecentRuns}
+                className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:bg-slate-50"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {runsError && (
+              <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {runsError}
               </div>
-              {runsError && (
-                <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  {runsError}
-                </div>
-              )}
-              <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
-                {recentRuns.map((run) => (
-                  <div key={run.run_id} className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-xs">
+            )}
+
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+              {recentRuns.map((run) => (
+                <div key={run.run_id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate font-semibold text-slate-700">Run #{run.run_id}</div>
-                      <div className="truncate text-[10px] text-slate-500">{run.initial_prompt}</div>
+                      <div className="truncate text-[10px] text-slate-500">{run.workflow_id}</div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => replayRun(run.run_id)}
-                      disabled={isRunning || isReplaying}
+                      onClick={() => inspectRun(run)}
+                      disabled={isReplaying}
                       className="shrink-0 rounded border border-indigo-200 bg-white px-2 py-1 text-[10px] font-semibold text-indigo-600 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-slate-400"
                     >
-                      Replay
+                      {isReplaying && currentRunId === run.run_id ? "Loading" : "Inspect"}
                     </button>
                   </div>
-                ))}
-              </div>
+                  <div className="mt-2 line-clamp-2 text-[10px] text-slate-500">
+                    {run.initial_prompt || "No initial prompt captured."}
+                  </div>
+                </div>
+              ))}
+
+              {!runsError && recentRuns.length === 0 && (
+                <div className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500">
+                  No traces yet. Start a run from the Orra SDK and refresh this panel.
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </Panel>
       </ReactFlow>
     </div>
