@@ -1,4 +1,4 @@
-# Orra
+# Orra - Open-source agent debugging and observability for local development.
 
 Orra is an agent trace debugging and replay dashboard for multi-agent AI systems.
 
