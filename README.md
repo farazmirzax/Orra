@@ -85,10 +85,26 @@ The dashboard runs at:
 http://localhost:3000
 ```
 
+## Install the Python SDK
+
+For local development from this repo:
+
+```bash
+pip install -e packages/orra
+```
+
+The intended published install command is:
+
+```bash
+pip install orra
+```
+
+`orra` is the SDK package. The backend and dashboard still run separately.
+
 ## Trace an External Python App
 
 ```python
-from sdk.python import OrraTracer
+from orra import OrraTracer
 
 tracer = OrraTracer(
     workflow_id="research-agent",
