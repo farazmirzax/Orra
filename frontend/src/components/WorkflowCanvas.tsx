@@ -13,6 +13,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import CustomNode from "./CustomNode";
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_ORRA_API_URL || "http://127.0.0.1:8000";
+
 type NodeStatus = "idle" | "queued" | "running" | "success" | "failed";
 
 type WorkflowNodeData = {
@@ -147,7 +149,7 @@ export default function WorkflowCanvas() {
   const loadRecentRuns = useCallback(async () => {
     try {
       setRunsError(null);
-      const response = await fetch("http://127.0.0.1:8000/api/runs");
+      const response = await fetch(`${API_BASE_URL}/api/runs`);
       if (!response.ok) throw new Error("Run history request failed.");
       const data = await response.json();
       setRecentRuns(data.runs || []);
@@ -162,7 +164,7 @@ export default function WorkflowCanvas() {
 
     const loadInitialRuns = async () => {
       try {
-        const response = await fetch("http://127.0.0.1:8000/api/runs");
+        const response = await fetch(`${API_BASE_URL}/api/runs`);
         if (!response.ok) throw new Error("Run history request failed.");
         const data = await response.json();
         if (isMounted) {
@@ -210,9 +212,9 @@ export default function WorkflowCanvas() {
     setNodeDetails((currentDetails) => ({
       ...currentDetails,
       [nodeId]: {
-        status: "idle",
         ...currentDetails[nodeId],
         ...details,
+        status: details.status || currentDetails[nodeId]?.status || "idle",
       },
     }));
   };
@@ -227,7 +229,7 @@ export default function WorkflowCanvas() {
     setNodeDetails({});
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/runs/${run.run_id}`);
+      const response = await fetch(`${API_BASE_URL}/api/runs/${run.run_id}`);
       if (!response.ok) throw new Error("Run details request failed.");
 
       const runDetails = (await response.json()) as RunDetails;

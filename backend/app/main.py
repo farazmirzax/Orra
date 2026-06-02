@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
@@ -13,12 +14,21 @@ app = FastAPI(
     version="0.1.0"
 )
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "ORRA_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
+
 #CORS config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], # Allows your Next.js app
+    allow_origins=allowed_origins, #For nextjs
     allow_credentials=True,
-    allow_methods=["*"], # Allows POST, GET, etc.
+    allow_methods=["*"], # For HTTP Methods
     allow_headers=["*"],
 )
 
