@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-  { name = "Orra" }
+  { name = "Faraz Mirza", email = "farazmirza1023@gmail.com" }
 ]
 keywords = ["ai", "agents", "tracing", "debugging", "observability"]
 classifiers = [
@@ -25,7 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nawaz/Orra"
+Homepage = "https://orra-tracer.vercel.app/"
+Repository = "https://github.com/farazmirzax/orra"
+LinkedIn = "https://linkedin.com/in/your-profile"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orra"]

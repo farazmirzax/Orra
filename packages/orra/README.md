@@ -39,3 +39,9 @@ tracer.end("completed")
 ```
 
 The trace appears in the Orra dashboard as an inspectable run.
+
+## 👨‍💻 Built By
+Developed by **Faraz Mirza** ([@farazmirzax](https://github.com/farazmirzax)). 
+
+* [Connect on LinkedIn](https://www.linkedin.com/in/faraz-mirza-488a2627b/)
+* [Check out my Portfolio](https://farazm.vercel.app)
