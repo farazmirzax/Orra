@@ -2,7 +2,7 @@
 
 **An open-source Python tracing SDK for visualizing multi-agent AI workflows.**
 
-🌐 **Live Dashboard:** [orra-frontend-two.vercel.app](https://orra-frontend-two.vercel.app)
+🌐 **Live Dashboard:** [Orra](https://orra-tracer.vercel.app/)
 
 Orra provides a lightweight, real-time telemetry layer that routes agent execution steps, prompts, and outputs directly into a visual Next.js debugging dashboard. It is perfect for tracking complex, multi-agent systems (like LangGraph) with zero local bloat.
 
