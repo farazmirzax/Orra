@@ -2,7 +2,9 @@
 
 Orra is an agent trace debugging and replay dashboard for multi-agent AI systems.
 
-Instead of building workflows inside the UI, real agent applications send execution traces to Orra through the Python SDK or trace API. Orra stores those runs, visualizes the agent graph, replays execution step by step, and lets developers inspect node inputs, outputs, latency, retries, and failures.
+Real agent applications send execution traces to Orra through the Python SDK or trace API. Orra stores those runs, visualizes the agent graph, replays execution step by step, and lets developers inspect node inputs, outputs, latency, retries, and failures.
+
+**Try the live dashboard:** [https://orra-tracer.vercel.app](https://orra-tracer.vercel.app)
 
 ## What It Solves
 
@@ -87,16 +89,18 @@ http://localhost:3000
 
 ## Install the Python SDK
 
+Install from PyPI:
+
+```bash
+pip install orra
+```
+
+View on PyPI: [https://pypi.org/project/orra/](https://pypi.org/project/orra/)
+
 For local development from this repo:
 
 ```bash
 pip install -e packages/orra
-```
-
-The intended published install command is:
-
-```bash
-pip install orra
 ```
 
 `orra` is the SDK package. The backend and dashboard still run separately.
