@@ -1,4 +1,4 @@
-# Orra 🚀
+# Orra 
 
 **An open-source Python tracing SDK for visualizing multi-agent AI workflows.**
 
