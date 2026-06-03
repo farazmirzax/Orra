@@ -1,18 +1,27 @@
-# orra
+# Orra 
 
-Python tracing SDK for the Orra agent debugging dashboard.
+**An open-source Python tracing SDK for visualizing multi-agent AI workflows.**
 
-Install locally during development:
+🌐 **Live Dashboard:** [Orra](https://orra-tracer.vercel.app/)
+
+Orra provides a lightweight, real-time telemetry layer that routes agent execution steps, prompts, and outputs directly into a visual Next.js debugging dashboard. It is perfect for tracking complex, multi-agent systems (like LangGraph) with zero local bloat.
+
+## 📦 Installation
+
+Install the package directly from PyPI:
 
 ```bash
-pip install -e packages/orra
+pip install orra
 ```
 
-Use it from any Python agent app:
+## 🛠️ Quick Start
+
+Use `OrraTracer` from any Python agent app to send execution traces to your dashboard:
 
 ```python
 from orra import OrraTracer
 
+# 1. Initialize the tracer with your nodes and edges
 tracer = OrraTracer(
     workflow_id="research-agent",
     initial_prompt="Research vector databases",
@@ -27,6 +36,7 @@ tracer = OrraTracer(
 
 tracer.start()
 
+# 2. Trace your agent steps in real-time
 tracer.node_started("researcher", "Researcher", "Research vector databases")
 research = "Vector databases store embeddings for semantic search."
 tracer.node_completed("researcher", "Researcher", "Research vector databases", research, research)
@@ -36,12 +46,14 @@ summary = "Vector databases power semantic retrieval over embedded data."
 tracer.node_completed("summarizer", "Summarizer", research, summary, summary)
 
 tracer.end("completed")
+
 ```
 
-The trace appears in the Orra dashboard as an inspectable run.
+The trace instantly appears in the Orra dashboard as a fully inspectable, visual node graph!
 
 ## 👨‍💻 Built By
-Developed by **Faraz Mirza** ([@farazmirzax](https://github.com/farazmirzax)). 
+
+Developed by **Faraz Mirza** ([@farazmirzax](https://github.com/farazmirzax)).
 
 * [Connect on LinkedIn](https://www.linkedin.com/in/faraz-mirza-488a2627b/)
 * [Check out my Portfolio](https://farazm.vercel.app)
