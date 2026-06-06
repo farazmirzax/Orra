@@ -207,6 +207,6 @@ python -m py_compile sdk/python/orra_tracer.py sdk/python/example_trace.py
 
 ## Positioning
 
-Orra is not a workflow builder. It is a debugging and replay platform for agentic workflows.
+Orra is a debugging and replay platform for agentic workflows.
 
 The goal is to help developers understand why an AI agent system behaved the way it did.
